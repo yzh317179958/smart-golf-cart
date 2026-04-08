@@ -1,0 +1,53 @@
+# ROS2 workspace build artifacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local config
+.local/
+
+# Temporary files
+*.log
+*.gv
+*.pdf
+*.bag
+*.db3
+
+# Large binary files (models, maps)
+models/*.bin
+models/*.onnx
+models/*.trt
+src/drivers/lx_camera_ros/map/*.zip
+
+# ORB-SLAM3 Large Files
+vocabulary/ORBvoc.txt
+thirdparty/ORB_SLAM3/Vocabulary/*.txt
+src/localization/ORB_SLAM3/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local development config
+.local-config/
+
+# Vendor files (archive separately)
+MRDVS-*.tar.gz
+*.PDF
+
+# Test data (not versioned)
+data/
