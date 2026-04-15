@@ -57,8 +57,6 @@ class TestLogger(Node):
         # 事件去重（只记状态变化）
         self.prev_mode = ''
         self.prev_follow = ''
-        self.prev_estop = ''
-
         # 订阅
         gps_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -71,7 +69,6 @@ class TestLogger(Node):
         self.create_subscription(String, '/follow_state', self._follow_cb, 10)
         self.create_subscription(String, '/nav_trigger', self._nav_trigger_cb, 10)
         self.create_subscription(String, '/nav_complete', self._nav_complete_cb, 10)
-        self.create_subscription(String, '/emergency_stop_state', self._estop_cb, 10)
 
         # 定时保存（每 60 秒）
         self.create_timer(60.0, self._auto_save)
@@ -132,12 +129,6 @@ class TestLogger(Node):
     def _nav_complete_cb(self, msg: String):
         self.events.append({
             't': self._t(), 'type': 'nav_complete', 'data': msg.data})
-
-    def _estop_cb(self, msg: String):
-        if msg.data != self.prev_estop:
-            self.prev_estop = msg.data
-            self.events.append({
-                't': self._t(), 'type': 'emergency_stop', 'data': msg.data})
 
     # === 保存 ===
 

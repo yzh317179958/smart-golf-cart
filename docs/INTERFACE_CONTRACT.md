@@ -49,21 +49,20 @@
 | 话题 | 消息类型 | QoS | 频率(Hz) | 发布方 | 订阅方 |
 |------|----------|-----|----------|--------|--------|
 | `/system_mode` | `std_msgs/String` | default | 10 | mode_manager | follow_target_publisher, gps_waypoint_follower, mqtt_bridge |
-| `/cmd_vel` | `geometry_msgs/Twist` | default | 变化 | follow_target_publisher 或 lidar_emergency_stop | 底盘驱动 |
-| `/cmd_vel_nav` | `geometry_msgs/Twist` | default | 10 | gps_waypoint_follower | lidar_emergency_stop |
+| `/cmd_vel` | `geometry_msgs/Twist` | default | 10-20 | follow_target_publisher / gps_waypoint_follower / mode_manager | 底盘驱动 |
+| `/cmd_vel_nav` | `geometry_msgs/Twist` | default | 10 | gps_waypoint_follower（默认话题；launch 里 `cmd_vel_topic:=/cmd_vel`） | — |
 | `/nav_trigger` | `std_msgs/String` | QoS(depth=1) | 事件触发 | mqtt_bridge, summon_service | mode_manager, gps_waypoint_follower |
 | `/nav_complete` | `std_msgs/String` | QoS(depth=1) | 事件触发 | gps_waypoint_follower | mode_manager, summon_service, mqtt_bridge |
-| `/nav_blocked` | `std_msgs/String` | default | 事件触发 | lidar_emergency_stop | gps_waypoint_follower |
-| `/emergency_stop_state` | `std_msgs/String` | default | 事件触发 | lidar_emergency_stop | （调试/日志） |
+| `/nav_blocked` | `std_msgs/String` | default | 事件触发 | 外部预留接口（当前无 producer） | gps_waypoint_follower |
 
 **字段说明**：
 
 - `/system_mode`：系统模式字符串，如 `"IDLE"`、`"FOLLOW"`、`"NAV"` 等。
-- `/cmd_vel`：最终下发到底盘的速度指令。在跟随模式下由 follow_target_publisher 直接发布；在导航模式下由 lidar_emergency_stop 中继 `/cmd_vel_nav` 并附加急停保护。
-- `/cmd_vel_nav`：GPS 导航产生的原始速度指令，经过急停节点过滤后转发至 `/cmd_vel`。
+- `/cmd_vel`：最终下发到底盘的速度指令。跟随模式由 follow_target_publisher 直发；导航模式由 gps_waypoint_follower 直发（launch 里 `cmd_vel_topic:=/cmd_vel`），避墙能力内置于脉冲状态机。
+- `/cmd_vel_nav`：follower 在节点层面的默认话题名，实际由 launch 参数重映射到 `/cmd_vel`。
 - `/nav_trigger`：导航触发命令，包含目标路点信息。
 - `/nav_complete`：导航完成通知。
-- `/nav_blocked`：障碍物阻塞通知，导航节点收到后进入等待或重规划。
+- `/nav_blocked`：外部预留阻断接口，follower 订阅后停车并上报 `blocked`。
 
 ---
 
@@ -79,7 +78,7 @@
 | `/heading` | `geometry_msgs/QuaternionStamped` | default | 1-5 | GPS 驱动 | imu_ned_to_enu |
 | `/h30_imu_raw` | `sensor_msgs/Imu` | default | 200 | yesense 驱动 | imu_ned_to_enu |
 | `/h30_imu` | `sensor_msgs/Imu` | default | 200 | imu_ned_to_enu | EKF |
-| `/scan` | `sensor_msgs/LaserScan` | BEST_EFFORT | 12 | N10P 驱动 | lidar_emergency_stop, gps_waypoint_follower, costmap |
+| `/scan` | `sensor_msgs/LaserScan` | BEST_EFFORT | 12 | N10P 驱动 | gps_waypoint_follower |
 | `/odom_combined` | `nav_msgs/Odometry` | default | 20 | WheelTec EKF | gps_path_recorder |
 | `/lx_camera_node/LxCamera_Rgb` | `sensor_msgs/Image` | default | 15 | S11 驱动 | detection_node（经 yolo_ros） |
 | `/lx_camera_node/LxCamera_Depth` | `sensor_msgs/Image` | default | 15 | S11 驱动 | follow_target_publisher, camera_info_fix |
@@ -216,8 +215,7 @@
 | **lock_manager** | 目标锁定 | S: `/yolo/tracking` → P: `/locked_target`, `/follow_state` |
 | **mode_manager** | 模式管理 | S: `/gesture_cmd`, `/follow_state`, `/nav_trigger`, `/joy` → P: `/system_mode` |
 | **follow_target_publisher** | 跟随控制 | S: `/locked_target`, `/follow_state`, `/system_mode`, `/lx_camera_node/LxCamera_Depth` → P: `/cmd_vel` |
-| **gps_waypoint_follower** | GPS 导航 | S: `/system_mode`, `/gps/fix`, `/heading_deg`, `/scan`, `/nav_trigger`, `/nav_blocked` → P: `/cmd_vel_nav`, `/nav_complete` |
-| **lidar_emergency_stop** | 急停中继 | S: `/cmd_vel_nav`, `/scan` → P: `/cmd_vel`, `/nav_blocked`, `/emergency_stop_state` |
+| **gps_waypoint_follower** | GPS 脉冲导航 | S: `/system_mode`, `/gps/fix`, `/heading_deg`, `/scan`, `/nav_trigger`, `/nav_blocked` → P: `/cmd_vel`（内置避墙脉冲，launch 里 `cmd_vel_topic:=/cmd_vel`）, `/nav_complete` |
 | **gps_path_recorder** | 路点记录 | S: `/gps/fix`, `/gps/filtered`, `/follow_state`, `/odom_combined`, `/mark_waypoint_label` → P: `/path_graph/stats`；写入: `path_graph.json` |
 | **mqtt_bridge** | MQTT 桥接 | S: `/system_mode`, `/follow_state`, `/gps/fix`, `/nav_complete`, `/path_graph/stats`, `/summon_result` → P: `/nav_trigger`, `/summon_request`, `/mark_waypoint_label` |
 | **summon_service** | 召唤服务 | S: `/summon_request`, `/nav_complete` → P: `/nav_trigger`, `/summon_result`；读取: `path_graph.json` |

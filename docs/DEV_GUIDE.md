@@ -312,12 +312,11 @@ colcon build --symlink-install --packages-select golf_navigation
 | `/system_mode` | `std_msgs/String` | 输出 | 当前系统模式（idle/follow/navigate） |
 | `/follow_state` | `std_msgs/String` | 输出 | 跟随状态（tracking/lost/stopped） |
 | `/locked_target` | `yolo_msgs/Detection` | 输出 | 锁定的跟随目标 |
-| `/cmd_vel` | `geometry_msgs/Twist` | 输出 | 最终速度指令 |
-| `/cmd_vel_nav` | `geometry_msgs/Twist` | 中间 | 导航层速度（经急停中继） |
+| `/cmd_vel` | `geometry_msgs/Twist` | 输出 | 最终速度指令（跟随直发；导航由 follower 直发，内置脉冲避墙） |
+| `/cmd_vel_nav` | `geometry_msgs/Twist` | 可选 | follower 默认话题（launch 重映射为 `/cmd_vel`） |
 | `/nav_trigger` | `std_msgs/String` | 输入/输出 | 导航触发指令 |
 | `/nav_complete` | `std_msgs/String` | 输出 | 导航完成通知 |
-| `/nav_blocked` | `std_msgs/String` | 输出 | LiDAR 检测到前方障碍 |
-| `/emergency_stop_state` | `std_msgs/String` | 输出 | 急停状态 |
+| `/nav_blocked` | `std_msgs/String` | 输入 | 外部阻断信号（预留接口，无默认 producer） |
 
 ### 5.3 建图传感器层（golf_mapping）
 
@@ -351,7 +350,7 @@ colcon build --symlink-install --packages-select golf_navigation
 /yolo/tracking → lock_manager → /locked_target → follow_target_publisher → /cmd_vel
                → gesture_node → /gesture_cmd → mode_manager → /system_mode
 
-/gps/fix + /heading_deg → gps_waypoint_follower → /cmd_vel_nav → lidar_emergency_stop → /cmd_vel
+/gps/fix + /heading_deg + /scan → gps_waypoint_follower → /cmd_vel（脉冲直发，内置避墙）
 
 Web APP ← MQTT → mqtt_bridge → /nav_trigger, /summon_request, /mark_waypoint_label
 ```
@@ -588,19 +587,14 @@ python3 -c "import transforms3d; print(transforms3d.__file__)"
 ~/golf_ws/src/
 ├── golf_bringup/                    # [项目负责人] 启动与配置
 │   ├── launch/
-│   │   ├── bringup_launch.py        # 全栈启动
 │   │   ├── sensors.launch.py        # 传感器层
 │   │   ├── perception.launch.py     # 感知层
-│   │   ├── follow.launch.py         # 跟随模式
-│   │   ├── navigation.launch.py     # 导航模式
-│   │   ├── minimal_nav2.launch.py   # Nav2 最小启动
+│   │   ├── follow.launch.py         # 跟随 + 导航 + MQTT（含 mode 参数）
 │   │   ├── slam.launch.py           # SLAM 建图
 │   │   ├── s11_tf.launch.py         # S11 相机 TF
 │   │   └── depth_scan.launch.py     # 深度图转 scan
 │   ├── config/
-│   │   ├── nav2_params.yaml         # Nav2 参数
 │   │   ├── ekf_gps.yaml             # EKF GPS 融合参数
-│   │   ├── collision_monitor.yaml   # 碰撞监测参数
 │   │   └── slam_toolbox.yaml        # SLAM 参数
 │   └── urdf/                        # 机器人模型描述
 │
@@ -614,9 +608,8 @@ python3 -c "import transforms3d; print(transforms3d.__file__)"
 ├── golf_navigation/                 # [规控工程师] 导航控制
 │   └── golf_navigation/
 │       ├── mode_manager_node.py     # 系统模式管理（idle/follow/navigate）
-│       ├── follow_target_publisher.py  # 跟随目标 → 速度指令
-│       ├── gps_waypoint_follower.py # GPS-PID 路点导航
-│       ├── lidar_emergency_stop.py  # LiDAR 急停中继
+│       ├── follow_target_publisher.py  # 跟随 PID 控制器
+│       ├── gps_waypoint_follower.py # GPS 脉冲转向路点跟随（内置避墙）
 │       ├── lock_manager_node.py     # 目标锁定管理
 │       └── summon_service.py        # 召唤服务
 │

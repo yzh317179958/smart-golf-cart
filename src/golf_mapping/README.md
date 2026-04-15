@@ -8,7 +8,7 @@
 |--------|------|----------|-----------------|
 | `gps_path_recorder` | 跟随过程中自动记录 GPS 面包屑路点，支持多次经过加权平均、跨 Session 帧对齐、路点标记 | `/gps/fix`, `/gps/filtered`, `/follow_state`, `/mark_waypoint_label`, `/odom_combined` | `/path_graph/stats`；写入 `path_graph.json` |
 | `imu_ned_to_enu` | H30 IMU NED→ENU 坐标转换 + G90 双天线航向优先融合，输出 EKF 可用的 ENU 坐标系 IMU | `/heading`, `/h30_imu_raw` | `/h30_imu` |
-| `test_logger` | 实车测试数据后台记录器，采集 GPS 轨迹 + 系统事件 | `/gps/fix`, `/heading_deg`, `/cmd_vel`, `/system_mode`, `/follow_state`, `/nav_trigger`, `/nav_complete`, `/emergency_stop_state` | 写入 `test_log_*.json` |
+| `test_logger` | 实车测试数据后台记录器，采集 GPS 轨迹 + 系统事件 | `/gps/fix`, `/heading_deg`, `/cmd_vel`, `/system_mode`, `/follow_state`, `/nav_trigger`, `/nav_complete` | 写入 `test_log_*.json` |
 
 ## 参数说明
 
