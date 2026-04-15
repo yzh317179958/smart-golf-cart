@@ -1,19 +1,14 @@
-"""GPS 路点导航器（v8.3: MPPI 避障模式 + 脉冲回退模式）
+"""GPS 路点导航器（v8.3 脉冲转向）
 
-MPPI 模式 (use_mppi=true):
-  /nav_trigger → Dijkstra路径 → 样条曲线平滑 → 密集path
-  → FollowPath action → MPPI 避障执行 → /cmd_vel_nav
-  GPS 到达判定 → 切下一段 path → 直到终点 → /nav_complete "arrived"
-
-脉冲回退模式 (use_mppi=false, 默认):
-  /nav_trigger → Dijkstra → 前瞻+1方位角 → 25°死区脉冲修正
-  状态机: STRAIGHT → NAV_PULSE(0.08,0.5s) → NAV_COOL(0,1s) → STRAIGHT
-  侧边护栏: WALL_PULSE(0.05,0.3s) → WALL_COOL(0,0.5s) 优先级最高
+流程:
+  /nav_trigger → Dijkstra 路径 → 前瞻 +1 方位角 → 死区脉冲修正
+  状态机: STRAIGHT → NAV_PULSE → NAV_COOL → STRAIGHT
+  侧边护栏: WALL_PULSE → WALL_COOL，优先级高于方向修正
 
 接口:
-  输入: /nav_trigger (String)     — 目标名、路点ID
+  输入: /nav_trigger (String)     — 目标名、路点 ID
   输出: /nav_complete (String)    — arrived / failed / blocked / canceled
-  阻断: /nav_blocked (String)     — 来自 LiDAR 急停
+  阻断: /nav_blocked (String)     — 来自上游阻断信号
 """
 
 import json
@@ -25,21 +20,10 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from rclpy.duration import Duration
 
 from std_msgs.msg import String, Float32
 from sensor_msgs.msg import NavSatFix, LaserScan
-from geometry_msgs.msg import Twist, PoseStamped
-from nav_msgs.msg import Path
-
-# MPPI 模式需要
-try:
-    from nav2_msgs.action import FollowPath as FollowPathAction
-    from rclpy.action import ActionClient
-    import tf2_ros
-    _NAV2_AVAILABLE = True
-except ImportError:
-    _NAV2_AVAILABLE = False
+from geometry_msgs.msg import Twist
 
 _EARTH_R = 6371000.0
 
@@ -96,10 +80,6 @@ class GpsWaypointFollower(Node):
         self.declare_parameter('pulse_wall_off', 0.5)        # 避墙冷却持续 (s)
         self.declare_parameter('wall_threshold', 3.0)        # 侧边护栏触发距离 (m)
         self.declare_parameter('cmd_vel_topic', '/cmd_vel_nav')
-        self.declare_parameter('use_mppi', False)            # MPPI 模式
-        self.declare_parameter('use_pure_pursuit', False)    # Pure Pursuit 模式（替代前瞻PID）
-        self.declare_parameter('lookahead_distance', 10.0)   # Pure Pursuit 前瞻距离 (m)
-        self.declare_parameter('spline_spacing', 2.0)        # 样条插值点间距 (m) v8.1.3: 0.5→2.0 稀疏路径不纠结GPS偏差
 
         self.data_file = self.get_parameter('data_file').value
         self.arrival_tol = self.get_parameter('arrival_tolerance').value
@@ -120,18 +100,6 @@ class GpsWaypointFollower(Node):
         self.pulse_wall_off_ticks = round(self.get_parameter('pulse_wall_off').value / 0.1)
         self.wall_threshold = self.get_parameter('wall_threshold').value
         cmd_topic = self.get_parameter('cmd_vel_topic').value
-        self.use_mppi = self.get_parameter('use_mppi').value and _NAV2_AVAILABLE
-        self.use_pure_pursuit = self.get_parameter('use_pure_pursuit').value
-        self.lookahead_dist = self.get_parameter('lookahead_distance').value
-        self.spline_spacing = self.get_parameter('spline_spacing').value
-
-        # === MPPI 模式初始化 ===
-        if self.use_mppi:
-            self.tf_buffer = tf2_ros.Buffer()
-            self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-            self.follow_path_client = ActionClient(self, FollowPathAction, 'follow_path')
-            self.mppi_ready = False
-            self._goal_handle = None
 
         # === 路点图 ===
         self.waypoints = {}
@@ -177,8 +145,7 @@ class GpsWaypointFollower(Node):
         self.create_subscription(String, '/nav_blocked', self._blocked_cb, 10)
 
         # === 发布 ===
-        if not self.use_mppi:
-            self.cmd_pub = self.create_publisher(Twist, cmd_topic, 10)
+        self.cmd_pub = self.create_publisher(Twist, cmd_topic, 10)
         self.nav_complete_pub = self.create_publisher(String, '/nav_complete', 10)
 
         # === 定时器 ===
@@ -187,14 +154,11 @@ class GpsWaypointFollower(Node):
         # === 加载路点图 ===
         self._load_graph()
 
-        if self.use_mppi:
-            mode_label = 'MPPI样条避障'
-        else:
-            mode_label = (f'脉冲式 (死区={self.dead_zone}° '
-                          f'nav_w={self.pulse_nav_w} wall_w={self.pulse_wall_w})')
         self.get_logger().info(
-            f'GPS 路点导航器启动 | 模式: {mode_label} | 路点: {len(self.waypoints)} | '
-            f'到达容差: {self.arrival_tol}m | max_w={self.max_angular}')
+            f'GPS 路点导航器启动 | 脉冲式 死区={self.dead_zone}° '
+            f'nav_w={self.pulse_nav_w} wall_w={self.pulse_wall_w} | '
+            f'路点: {len(self.waypoints)} | 到达容差: {self.arrival_tol}m | '
+            f'max_w={self.max_angular}')
 
     # ================================================================
     #  回调（轻量）
@@ -440,18 +404,6 @@ class GpsWaypointFollower(Node):
     #  GPS 平滑（防蛇形措施 #1）
     # ================================================================
 
-    def _get_avg_heading(self):
-        """最近航向读数的圆周平均（处理 359°/1° 跨越问题），减少初始化噪声"""
-        if not self.heading_buffer:
-            return self.heading_deg
-        # 只用最近 10 个读数 (~1秒)
-        recent = self.heading_buffer[-10:]
-        # 圆周平均：先转极坐标再平均
-        sin_sum = sum(math.sin(math.radians(h)) for h, _ in recent)
-        cos_sum = sum(math.cos(math.radians(h)) for h, _ in recent)
-        avg = math.degrees(math.atan2(sin_sum, cos_sum)) % 360.0
-        return avg
-
     def _get_smoothed_gps(self):
         """最近 N 个 GPS 读数的滚动平均，降低 ±1.5m 随机噪声"""
         if not self.gps_buffer:
@@ -475,13 +427,6 @@ class GpsWaypointFollower(Node):
 
         if not self.navigating:
             return
-
-        # MPPI 模式: GPS 到达判定 + 切段（MPPI 负责执行，不做 PID）
-        if self.use_mppi:
-            self._mppi_nav_loop()
-            return
-
-        # === 以下为 PID 回退模式 ===
 
         # 检查阻断（停车+通知用户，不自动后退）
         if self.blocked:
@@ -623,140 +568,6 @@ class GpsWaypointFollower(Node):
             throttle_duration_sec=1.0)
 
     # ================================================================
-    #  转向策略
-    # ================================================================
-
-    def _lookahead_pid_error(self, cur_lat, cur_lon, dist_to_target):
-        """前瞻PID：看远3个路点的方位角误差 + 终点路段方向修复"""
-        look_idx = min(self.nav_index + 1, len(self.nav_path) - 1)
-        look_id = self.nav_path[look_idx]
-        look_wp = self.waypoints[look_id]
-
-        # 终点修复：前瞻钳位到末尾且距离近时，用路段方向代替GPS方位角
-        is_terminal = (look_idx == len(self.nav_path) - 1)
-        look_dist = haversine(cur_lat, cur_lon,
-                              look_wp['lat'], look_wp['lon'])
-        if is_terminal and look_dist < 2.0 * self.arrival_tol and look_idx > 0:
-            # 用前一路点→终点的路段方向（固定值，不受GPS噪声影响）
-            prev_id = self.nav_path[look_idx - 1]
-            prev_wp = self.waypoints[prev_id]
-            seg_bearing = compass_bearing(
-                prev_wp['lat'], prev_wp['lon'],
-                look_wp['lat'], look_wp['lon'])
-            error_deg = normalize_angle_deg(seg_bearing - self.heading_deg)
-            label = f'终:{look_id}(段{seg_bearing:.0f}°)'
-        else:
-            look_bearing = compass_bearing(
-                cur_lat, cur_lon, look_wp['lat'], look_wp['lon'])
-            error_deg = normalize_angle_deg(look_bearing - self.heading_deg)
-            label = f'瞄:{look_id}'
-
-        # 死区减法：噪声区归零，超出部分减去(死区+额外衰减)收窄弧线
-        EXTRA_ATTEN = 2.0  # 额外衰减度数，抑制路点噪声对弯道的放大
-        if abs(error_deg) < self.dead_zone:
-            error_deg = 0.0
-        else:
-            error_deg = math.copysign(
-                max(0.0, abs(error_deg) - self.dead_zone - EXTRA_ATTEN),
-                error_deg)
-
-        return error_deg, label
-
-    def _pure_pursuit_error(self, cur_lat, cur_lon):
-        """Pure Pursuit：路线上固定距离前瞻点的方位角误差"""
-        # 1. 找最近路段
-        seg_idx = self._find_nearest_segment(cur_lat, cur_lon)
-
-        # 2. 沿路线前移 L 米找追踪点
-        look_lat, look_lon = self._walk_along_path(
-            seg_idx, cur_lat, cur_lon, self.lookahead_dist)
-
-        # 3. 算方位角误差（不需要死区，前瞻距离固定，噪声恒定）
-        look_bearing = compass_bearing(cur_lat, cur_lon, look_lat, look_lon)
-        error_deg = normalize_angle_deg(look_bearing - self.heading_deg)
-
-        label = f'PP:seg{seg_idx}(L={self.lookahead_dist:.0f}m)'
-        return error_deg, label
-
-    def _find_nearest_segment(self, lat, lon):
-        """找车最近的路段（投影距离最短）"""
-        best_seg = max(0, self.nav_index - 1)
-        best_dist = float('inf')
-        # 只搜索 nav_index 附近的段，避免跳到远处
-        start = max(0, self.nav_index - 2)
-        end = min(len(self.nav_path) - 1, self.nav_index + 5)
-        for i in range(start, end):
-            wp_a = self.waypoints[self.nav_path[i]]
-            wp_b = self.waypoints[self.nav_path[i + 1]]
-            d = self._point_to_segment_dist(lat, lon, wp_a, wp_b)
-            if d < best_dist:
-                best_dist = d
-                best_seg = i
-        return best_seg
-
-    def _point_to_segment_dist(self, lat, lon, wp_a, wp_b):
-        """点到线段的垂直距离（米）"""
-        # 转局部米制坐标
-        cos_lat = math.cos(math.radians(lat))
-        dp_n = (lat - wp_a['lat']) * 111320.0
-        dp_e = (lon - wp_a['lon']) * 111320.0 * cos_lat
-        db_n = (wp_b['lat'] - wp_a['lat']) * 111320.0
-        db_e = (wp_b['lon'] - wp_a['lon']) * 111320.0 * cos_lat
-        seg_len_sq = db_n * db_n + db_e * db_e
-        if seg_len_sq < 0.01:
-            return math.sqrt(dp_n * dp_n + dp_e * dp_e)
-        t = max(0.0, min(1.0, (dp_n * db_n + dp_e * db_e) / seg_len_sq))
-        proj_n = t * db_n
-        proj_e = t * db_e
-        return math.sqrt((dp_n - proj_n) ** 2 + (dp_e - proj_e) ** 2)
-
-    def _walk_along_path(self, seg_idx, cur_lat, cur_lon, L):
-        """从最近路段的投影点出发，沿路线前行 L 米，返回追踪点坐标"""
-        # 投影到最近路段，算出剩余段内距离
-        wp_a = self.waypoints[self.nav_path[seg_idx]]
-        wp_b = self.waypoints[self.nav_path[seg_idx + 1]]
-        cos_lat = math.cos(math.radians(cur_lat))
-        dp_n = (cur_lat - wp_a['lat']) * 111320.0
-        dp_e = (cur_lon - wp_a['lon']) * 111320.0 * cos_lat
-        db_n = (wp_b['lat'] - wp_a['lat']) * 111320.0
-        db_e = (wp_b['lon'] - wp_a['lon']) * 111320.0 * cos_lat
-        seg_len_sq = db_n * db_n + db_e * db_e
-        seg_len = math.sqrt(seg_len_sq) if seg_len_sq > 0.01 else 0.0
-
-        if seg_len > 0:
-            t = max(0.0, min(1.0,
-                             (dp_n * db_n + dp_e * db_e) / seg_len_sq))
-            remaining_in_seg = seg_len * (1.0 - t)
-        else:
-            remaining_in_seg = 0.0
-
-        remaining = L
-
-        # 先消耗当前段剩余部分
-        if remaining <= remaining_in_seg and seg_len > 0:
-            frac = t + remaining / seg_len
-            lat = wp_a['lat'] + frac * (wp_b['lat'] - wp_a['lat'])
-            lon = wp_a['lon'] + frac * (wp_b['lon'] - wp_a['lon'])
-            return lat, lon
-        remaining -= remaining_in_seg
-
-        # 继续沿后续路段前行
-        for i in range(seg_idx + 1, len(self.nav_path) - 1):
-            wa = self.waypoints[self.nav_path[i]]
-            wb = self.waypoints[self.nav_path[i + 1]]
-            d = haversine(wa['lat'], wa['lon'], wb['lat'], wb['lon'])
-            if remaining <= d and d > 0:
-                frac = remaining / d
-                lat = wa['lat'] + frac * (wb['lat'] - wa['lat'])
-                lon = wa['lon'] + frac * (wb['lon'] - wa['lon'])
-                return lat, lon
-            remaining -= d
-
-        # 路线走完了，返回终点
-        final = self.waypoints[self.nav_path[-1]]
-        return final['lat'], final['lon']
-
-    # ================================================================
     #  导航生命周期
     # ================================================================
 
@@ -826,10 +637,8 @@ class GpsWaypointFollower(Node):
             f'校正 {len(self.waypoints)} 路点')
 
     def _start_navigation(self, target):
-        """规划路径并开始 GPS-PID 跟随"""
-        # 清理上一次残留的 goal
+        """规划路径并开始脉冲式跟随"""
         self._stop_cmd()
-        self._goal_handle = None
         self.blocked = False
 
         self._load_graph()
@@ -882,22 +691,15 @@ class GpsWaypointFollower(Node):
                     path = path[i:]
                     break
 
-        if self.use_mppi:
-            self.nav_path = path
-            self.nav_index = 0
-            self.navigating = True
-            self.blocked = False
-            self._send_spline_path(path, cur_lat, cur_lon)
-        else:
-            self.get_logger().info(
-                f'脉冲路径: {len(path)} 路点 → 逐点跟随')
-            self.nav_path = path
-            self.nav_index = 0
-            self.navigating = True
-            self.blocked = False
-            self.pulse_state = 0
-            self.pulse_ticks = 0
-            self.pulse_dir = 0
+        self.get_logger().info(
+            f'脉冲路径: {len(path)} 路点 → 逐点跟随')
+        self.nav_path = path
+        self.nav_index = 0
+        self.navigating = True
+        self.blocked = False
+        self.pulse_state = 0
+        self.pulse_ticks = 0
+        self.pulse_dir = 0
 
     def _cancel_nav(self):
         if self.navigating:
@@ -906,7 +708,7 @@ class GpsWaypointFollower(Node):
             self._finish_nav('canceled')
 
     def _finish_nav(self, result, reason=''):
-        self._stop_cmd()  # 确保取消残留的 FollowPath goal
+        self._stop_cmd()
         self.navigating = False
         self.nav_path = []
         self.nav_index = 0
@@ -918,257 +720,8 @@ class GpsWaypointFollower(Node):
         self.get_logger().info(f'导航结果: {result}')
 
     def _stop_cmd(self):
-        if self.use_mppi:
-            # MPPI 模式: 取消 FollowPath goal，controller_server 会自动停车
-            if self._goal_handle is not None:
-                try:
-                    self._goal_handle.cancel_goal_async()
-                except Exception:
-                    pass
-                self._goal_handle = None
-        else:
-            cmd = Twist()
-            self.cmd_pub.publish(cmd)
-
-    # ================================================================
-    #  MPPI 模式: 样条平滑 + FollowPath + GPS 到达判定
-    # ================================================================
-
-    def _mppi_nav_loop(self):
-        """MPPI 模式主循环: 仅做 GPS 到达判定，MPPI 负责执行"""
-        # 阻断检查
-        if self.blocked:
-            self.get_logger().error('路径阻断，停车通知用户')
-            self._finish_nav('blocked')
-            return
-
-        # GPS 到达判定
-        cur_lat, cur_lon = self._get_smoothed_gps()
-        if cur_lat is None:
-            return
-
-        # 检查是否到达终点
-        final_id = self.nav_path[-1]
-        final_wp = self.waypoints[final_id]
-        dist_to_final = haversine(cur_lat, cur_lon, final_wp['lat'], final_wp['lon'])
-
-        if dist_to_final < self.arrival_tol:
-            self.get_logger().info(f'到达终点 {final_id} ({dist_to_final:.1f}m)')
-            self._finish_nav('arrived')
-            return
-
-        self.get_logger().info(
-            f'MPPI 导航中 | 距终点: {dist_to_final:.1f}m | '
-            f'终点: {final_id} [{len(self.nav_path)} 路点]',
-            throttle_duration_sec=3.0)
-
-    def _send_spline_path(self, path_ids, ref_lat, ref_lon):
-        """GPS 路点 → 旋转对齐 odom → 样条平滑 → FollowPath action
-
-        关键：GPS local 坐标 (x=East, y=North) 必须旋转到 odom 帧后才能用。
-        odom 帧的 x 轴方向取决于 EKF 初始化，不一定朝东。
-        用 G90 航向 (compass) + odom yaw 计算旋转角。
-        """
-        if not self.mppi_ready:
-            if not self.follow_path_client.server_is_ready():
-                self.get_logger().warn('MPPI controller_server 未就绪')
-                self._finish_nav('failed', 'MPPI controller_server 未就绪，请先启动 minimal_nav2.launch.py')
-                return
-            self.mppi_ready = True
-            self.get_logger().info('MPPI controller_server 就绪')
-
-        # 需要 G90 航向来计算 GPS→odom 旋转（用平均值减少初始化噪声）
-        if self.heading_deg is None:
-            self._finish_nav('failed', 'G90 航向不可用，无法对齐 GPS→odom')
-            return
-
-        avg_heading = self._get_avg_heading()
-
-        # 获取 robot 在 odom 帧的位姿（位置+朝向）
-        try:
-            tf = self.tf_buffer.lookup_transform(
-                'odom_combined', 'base_footprint', rclpy.time.Time(),
-                timeout=Duration(seconds=1.0))
-            anchor_x = tf.transform.translation.x
-            anchor_y = tf.transform.translation.y
-            # 从 quaternion 提取 yaw
-            q = tf.transform.rotation
-            odom_yaw = math.atan2(
-                2.0 * (q.w * q.z + q.x * q.y),
-                1.0 - 2.0 * (q.y * q.y + q.z * q.z))
-        except Exception:
-            self._finish_nav('failed', '无法获取 TF odom→base 位姿')
-            return
-
-        # 计算 East-North → odom 旋转角
-        # GPS heading: compass degrees (0=N, 90=E, clockwise)
-        # → ENU heading: rad from East, CCW = pi/2 - heading_rad
-        # odom yaw: rad from odom-x, CCW
-        # 两者描述同一个物理方向（车头朝向），所以:
-        #   heading_enu = odom_rotation + odom_yaw
-        #   odom_rotation = heading_enu - odom_yaw
-        heading_enu = math.pi / 2.0 - math.radians(avg_heading)
-        odom_rotation = heading_enu - odom_yaw  # East-North 帧相对 odom 帧的旋转
-
-        cos_r = math.cos(-odom_rotation)  # 负号：从 EN 旋转到 odom
-        sin_r = math.sin(-odom_rotation)
-
-        self.get_logger().info(
-            f'GPS→odom 对齐: heading_avg={avg_heading:.1f}° (latest={self.heading_deg:.1f}°) '
-            f'odom_yaw={math.degrees(odom_yaw):.1f}° '
-            f'rotation={math.degrees(-odom_rotation):.1f}°')
-
-        # GPS → local (x=East, y=North)，以当前 GPS 为原点
-        en_points = [(0.0, 0.0)]  # 车当前位置
-        for wp_id in path_ids:
-            wp = self.waypoints[wp_id]
-            x, y = self._gps_to_local(wp['lat'], wp['lon'], ref_lat, ref_lon)
-            en_points.append((x, y))
-
-        if len(en_points) < 2:
-            self._finish_nav('failed', '路径点不足')
-            return
-
-        # 旋转 East-North → odom 帧
-        local_points = []
-        for ex, ny in en_points:
-            ox = ex * cos_r - ny * sin_r
-            oy = ex * sin_r + ny * cos_r
-            local_points.append((ox, oy))
-
-        # 样条插值
-        smooth_points = self._catmull_rom_spline(local_points, self.spline_spacing)
-
-        # 构建 Nav2 Path（odom_combined 帧），每个 pose 带沿路径方向的 orientation
-        nav_path = Path()
-        nav_path.header.frame_id = 'odom_combined'
-        nav_path.header.stamp = self.get_clock().now().to_msg()
-
-        for i, (lx, ly) in enumerate(smooth_points):
-            pose = PoseStamped()
-            pose.header = nav_path.header
-            pose.pose.position.x = anchor_x + lx
-            pose.pose.position.y = anchor_y + ly
-            if i == 0:
-                # 第一个点是车当前位置，yaw 必须用车实际朝向（odom_yaw）
-                yaw = odom_yaw
-            elif i < len(smooth_points) - 1:
-                dx = smooth_points[i + 1][0] - lx
-                dy = smooth_points[i + 1][1] - ly
-                yaw = math.atan2(dy, dx)
-            else:
-                dx = lx - smooth_points[i - 1][0]
-                dy = ly - smooth_points[i - 1][1]
-                yaw = math.atan2(dy, dx)
-            pose.pose.orientation.z = math.sin(yaw / 2.0)
-            pose.pose.orientation.w = math.cos(yaw / 2.0)
-            nav_path.poses.append(pose)
-
-        # 发送 FollowPath
-        goal = FollowPathAction.Goal()
-        goal.path = nav_path
-        future = self.follow_path_client.send_goal_async(goal)
-        future.add_done_callback(self._mppi_goal_response_cb)
-
-        self.get_logger().info(
-            f'MPPI 路径已发送: {len(path_ids)} GPS路点 → '
-            f'{len(smooth_points)} 样条点 (间距 {self.spline_spacing}m)')
-
-    def _mppi_goal_response_cb(self, future):
-        try:
-            self._goal_handle = future.result()
-            if self._goal_handle and self._goal_handle.accepted:
-                # 注册 result callback 检测 abort/failure
-                self._goal_handle.get_result_async().add_done_callback(
-                    self._mppi_result_cb)
-            else:
-                self.get_logger().error('FollowPath goal 被拒绝')
-                self._finish_nav('failed', 'MPPI 拒绝路径')
-        except Exception as e:
-            self.get_logger().error(f'FollowPath goal 发送失败: {e}')
-            self._goal_handle = None
-            self._finish_nav('failed', 'FollowPath goal 发送异常')
-
-    def _mppi_result_cb(self, future):
-        """FollowPath 执行结束回调（成功/abort/失败）"""
-        try:
-            result = future.result()
-            status = result.status
-            # status: 4=SUCCEEDED, 5=CANCELED, 6=ABORTED
-            if status == 4:
-                self.get_logger().info('FollowPath 执行完成')
-            elif status == 6:
-                self.get_logger().warn('FollowPath 被 abort（MPPI 无法推进）')
-                if self.navigating:
-                    self._finish_nav('failed', 'MPPI 执行失败，无法推进')
-            elif status == 5:
-                self.get_logger().info('FollowPath 已取消')
-            else:
-                self.get_logger().warn(f'FollowPath 未知状态: {status}')
-                if self.navigating:
-                    self._finish_nav('failed', f'MPPI 异常状态 {status}')
-        except Exception as e:
-            self.get_logger().error(f'FollowPath result 回调异常: {e}')
-            if self.navigating:
-                self._finish_nav('failed', 'FollowPath result 获取失败')
-
-    def _gps_to_local(self, lat, lon, ref_lat, ref_lon):
-        """GPS → 以 ref 为原点的 local (x=东, y=北) 坐标 (米)"""
-        x = haversine(ref_lat, ref_lon, ref_lat, lon)
-        if lon < ref_lon:
-            x = -x
-        y = haversine(ref_lat, ref_lon, lat, ref_lon)
-        if lat < ref_lat:
-            y = -y
-        return x, y
-
-    def _catmull_rom_spline(self, points, spacing):
-        """Catmull-Rom 样条插值，生成密集平滑路径点。
-        不依赖 scipy，纯 numpy-free 手写实现。
-
-        输入: [(x0,y0), (x1,y1), ...] 离散控制点
-        输出: [(x,y), ...] 密集平滑路径点，间距 ≈ spacing 米
-        """
-        if len(points) <= 1:
-            return list(points)
-
-        # Catmull-Rom 需要前后各延伸一个虚拟点
-        pts = list(points)
-        # 前延伸: 2*P0 - P1
-        pts.insert(0, (2 * pts[0][0] - pts[1][0], 2 * pts[0][1] - pts[1][1]))
-        # 后延伸: 2*Pn - Pn-1
-        pts.append((2 * pts[-1][0] - pts[-2][0], 2 * pts[-1][1] - pts[-2][1]))
-
-        result = []
-        for i in range(1, len(pts) - 2):
-            p0 = pts[i - 1]
-            p1 = pts[i]
-            p2 = pts[i + 1]
-            p3 = pts[i + 2]
-
-            # 段长度估算
-            seg_len = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-            n_steps = max(2, int(seg_len / spacing))
-
-            for step in range(n_steps):
-                t = step / n_steps
-                t2 = t * t
-                t3 = t2 * t
-
-                # Catmull-Rom 矩阵公式
-                x = 0.5 * ((2 * p1[0])
-                           + (-p0[0] + p2[0]) * t
-                           + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
-                           + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
-                y = 0.5 * ((2 * p1[1])
-                           + (-p0[1] + p2[1]) * t
-                           + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
-                           + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
-                result.append((x, y))
-
-        # 添加终点
-        result.append(points[-1])
-        return result
+        cmd = Twist()
+        self.cmd_pub.publish(cmd)
 
     # ================================================================
     #  入口
@@ -1184,8 +737,7 @@ def main(args=None):
         pass
     finally:
         try:
-            if not node.use_mppi:
-                node._stop_cmd()
+            node._stop_cmd()
         except Exception:
             pass
         node.destroy_node()

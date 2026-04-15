@@ -1,37 +1,21 @@
-"""跟随控制器（v8.1: MPPI 避障模式 + PID 回退模式）
+"""跟随控制器
 
-MPPI 模式 (use_mppi=true, 默认):
-  YOLO bbox+深度 → 计算人位置 → FollowPath action → MPPI 避障跟随
-  controller_server 输出 /cmd_vel_nav → LiDAR 急停 → /cmd_vel
+YOLO bbox + 深度 → simplePID → /cmd_vel，直发底盘。
 
-PID 回退模式 (use_mppi=false):
-  YOLO bbox+深度 → PID → /cmd_vel（直发，v2.6.0 行为）
-
-PID 类完全复制自 WheelTec simple_follower_ros2/visualFollower.py。
+simplePID 类完全复制自 WheelTec simple_follower_ros2/visualFollower.py，
+目标距离默认 600mm，超过 out_of_range 距离自动停车。
 """
 
-import math
 import numpy as np
 import time
 
 import rclpy
 from rclpy.node import Node
-from rclpy.duration import Duration
 
 from std_msgs.msg import String
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import Twist, PoseStamped
-from nav_msgs.msg import Path
+from geometry_msgs.msg import Twist
 from yolo_msgs.msg import Detection
-
-# MPPI 模式需要
-try:
-    from nav2_msgs.action import FollowPath
-    from rclpy.action import ActionClient
-    import tf2_ros
-    _NAV2_AVAILABLE = True
-except ImportError:
-    _NAV2_AVAILABLE = False
 
 
 # ============================================================
@@ -149,34 +133,16 @@ class FollowTargetPublisher(Node):
         self.create_subscription(Image, '/lx_camera_node/LxCamera_Depth', self.depth_cb, 5)
         self.create_subscription(Detection, '/locked_target', self.target_cb, 10)
 
-        # === MPPI 模式 ===
-        self.declare_parameter('use_mppi', False)
-        self.use_mppi = self.get_parameter('use_mppi').value and _NAV2_AVAILABLE
-
-        if self.use_mppi:
-            self.tf_buffer = tf2_ros.Buffer()
-            self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-            self.follow_path_client = ActionClient(self, FollowPath, 'follow_path')
-            self.mppi_ready = False
-            self._goal_handle = None  # 保存 goal handle，用于取消
-            self.last_goal_time = 0.0
-            self.last_goal_x = 0.0
-            self.last_goal_y = 0.0
-            # MPPI 模式不直接发 cmd_vel（controller_server 发）
-            self.cmd_pub = self.create_publisher(Twist, '/cmd_vel_unused', 10)
-            output_label = 'MPPI FollowPath → controller_server → /cmd_vel_nav'
-        else:
-            self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-            output_label = '/cmd_vel (PID直发)'
+        # 发布: PID 直发底盘速度
+        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
         # WheelTec 原版：1 秒无数据停车
         self.last_target_time = time.monotonic()
         self.create_timer(0.5, self.safety_timer_cb)
 
         self.get_logger().info(
-            f'Follow controller | mode: {"MPPI避障" if self.use_mppi else "PID直发"} '
-            f'| target: {target_dist}mm | max_speed: {self.max_speed} '
-            f'| output: {output_label}')
+            f'Follow controller | target: {target_dist}mm '
+            f'| max_speed: {self.max_speed} | output: /cmd_vel')
 
     def _system_mode_cb(self, msg: String):
         new_mode = msg.data.lower()
@@ -235,14 +201,7 @@ class FollowTargetPublisher(Node):
             self.stop_moving()
             return
 
-        # === MPPI 模式: 发送 FollowPath 给 controller_server ===
-        if self.use_mppi:
-            self._send_mppi_goal(angle_x, distance)
-            return
-
-        # === PID 模式: WheelTec 原版控制逻辑 ===
-
-        # PID 更新
+        # PID 更新（WheelTec 原版控制逻辑）
         [uncliped_ang_speed, uncliped_lin_speed] = self.PID_controller.update([angle_x, distance])
 
         # 限幅（WheelTec 原版 + 禁止后退）
@@ -254,7 +213,6 @@ class FollowTargetPublisher(Node):
             self.PID_controller.integrator[1] = 0.0
 
         # WheelTec 原版：超出范围 → 停车
-        # 测试阶段无 collision_monitor，直发 /cmd_vel；Phase 4 启用后改回 /cmd_vel_raw
         if distance > self.out_of_range:
             self.stop_moving()
         else:
@@ -275,114 +233,11 @@ class FollowTargetPublisher(Node):
                 self.stop_moving()
 
     def stop_moving(self):
-        """停车: PID 模式发零速度, MPPI 模式取消 FollowPath goal"""
-        if self.use_mppi and self._goal_handle is not None:
-            try:
-                self._goal_handle.cancel_goal_async()
-            except Exception:
-                pass
-            self._goal_handle = None
+        """停车：发零速度"""
         velocity = Twist()
         velocity.linear.x = 0.0
         velocity.angular.z = 0.0
         self.cmd_pub.publish(velocity)
-
-    # === MPPI 避障跟随 ===
-
-    def _send_mppi_goal(self, angle_x, distance_mm):
-        """计算人在 odom 帧位置，发送 FollowPath 给 MPPI controller_server"""
-        # 等待 action server 就绪
-        if not self.mppi_ready:
-            if not self.follow_path_client.server_is_ready():
-                self.get_logger().info('等待 MPPI controller_server...', throttle_duration_sec=3.0)
-                return
-            self.mppi_ready = True
-            self.get_logger().info('MPPI controller_server 就绪')
-
-        distance_m = distance_mm / 1000.0
-
-        # 人在 base_footprint 帧的位置（x前 y左）
-        person_x_base = distance_m * math.cos(angle_x)
-        person_y_base = distance_m * math.sin(angle_x)
-
-        # TF 转换: base_footprint → odom_combined
-        try:
-            tf = self.tf_buffer.lookup_transform(
-                'odom_combined', 'base_footprint', rclpy.time.Time(),
-                timeout=Duration(seconds=0.1))
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException):
-            return
-
-        # 手动转换（避免 tf2_geometry_msgs 依赖问题）
-        # 从 TF 取 robot 在 odom 帧的位置和航向
-        robot_x = tf.transform.translation.x
-        robot_y = tf.transform.translation.y
-        # 四元数→yaw
-        q = tf.transform.rotation
-        siny = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        robot_yaw = math.atan2(siny, cosy)
-
-        # 旋转 base→odom
-        cos_yaw = math.cos(robot_yaw)
-        sin_yaw = math.sin(robot_yaw)
-        person_x_odom = robot_x + person_x_base * cos_yaw - person_y_base * sin_yaw
-        person_y_odom = robot_y + person_x_base * sin_yaw + person_y_base * cos_yaw
-
-        # 节流：人移动 >0.5m 或 >1s 才更新
-        dx = person_x_odom - self.last_goal_x
-        dy = person_y_odom - self.last_goal_y
-        dist_moved = math.sqrt(dx * dx + dy * dy)
-        now = time.monotonic()
-        if dist_moved < 0.5 and now - self.last_goal_time < 1.0:
-            return
-
-        # 创建 2 点路径: robot → person
-        path = Path()
-        path.header.frame_id = 'odom_combined'
-        path.header.stamp = self.get_clock().now().to_msg()
-
-        start = PoseStamped()
-        start.header = path.header
-        start.pose.position.x = robot_x
-        start.pose.position.y = robot_y
-        start.pose.orientation.w = 1.0
-        path.poses.append(start)
-
-        goal = PoseStamped()
-        goal.header = path.header
-        goal.pose.position.x = person_x_odom
-        goal.pose.position.y = person_y_odom
-        goal.pose.orientation.w = 1.0
-        path.poses.append(goal)
-
-        # 取消旧 goal + 发送新 FollowPath
-        if self._goal_handle is not None:
-            try:
-                self._goal_handle.cancel_goal_async()
-            except Exception:
-                pass
-        goal_msg = FollowPath.Goal()
-        goal_msg.path = path
-        future = self.follow_path_client.send_goal_async(goal_msg)
-        future.add_done_callback(self._goal_response_cb)
-
-        self.last_goal_x = person_x_odom
-        self.last_goal_y = person_y_odom
-        self.last_goal_time = now
-
-        self.get_logger().info(
-            f'MPPI goal: person({person_x_odom:.1f},{person_y_odom:.1f}) '
-            f'dist={distance_m:.1f}m angle={math.degrees(angle_x):.0f}°',
-            throttle_duration_sec=1.0)
-
-    def _goal_response_cb(self, future):
-        """保存 goal handle 用于后续取消"""
-        try:
-            self._goal_handle = future.result()
-        except Exception:
-            self._goal_handle = None
 
 
 def main(args=None):

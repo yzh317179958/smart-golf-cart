@@ -136,6 +136,6 @@ ros2 topic pub /nav_trigger std_msgs/msg/String "data: 'cancel'" --once
 
 1. **生产/测试数据隔离**：`gps_waypoint_follower` 和 `summon_service` 默认读 `data/production/path_graph.json`，测试必须通过 `mode:=test` 或显式 `-p data_file:=...` 隔离到 `data/test/`。
 2. **v8.3 脉冲转向**：`gps_waypoint_follower` 使用脉冲状态机（0 直行 / 1 方向脉冲 / 2 方向冷却 / 3 避墙脉冲 / 4 避墙冷却），方位角误差超过 `bearing_dead_zone` 时发射 `pulse_nav_on` 秒脉冲后强制冷却，直线段保持 `angular_z=0`。禁止恢复持续 PID 转向。
-3. **cmd_vel 链路**：导航 `gps_waypoint_follower` 直发 `/cmd_vel`（launch 里 `cmd_vel_topic:=/cmd_vel`），跟随 `follow_target_publisher → /cmd_vel`。避墙能力内置于 follower 脉冲状态机，已无 `lidar_emergency_stop` 中继节点。
+3. **cmd_vel 链路**：导航 `gps_waypoint_follower` 直发 `/cmd_vel`（launch 里 `cmd_vel_topic:=/cmd_vel`），跟随 `follow_target_publisher → /cmd_vel`。两者都不经过任何中继节点，避墙能力完全内置于 follower 脉冲状态机。
 4. **WheelTec 跟随 PID 原版**：`follow_target_publisher` 的 simplePID 类和默认参数完整复制自 WheelTec `simple_follower_ros2/visualFollower.py`，不要随意修改。
 5. **G90 双天线航向**：`gps_waypoint_follower` 依赖 `/heading_deg` 提供罗盘航向，航向丢失超过 `gps_timeout` 秒时停车等待。
