@@ -39,7 +39,7 @@
 
 **规控工程师**
 - 维护 `golf_navigation` 内所有节点
-- 包括: `mode_manager`、`follow_target_publisher`、`gps_waypoint_follower`、`lidar_emergency_stop`、`lock_manager`、`summon_service`
+- 包括: `mode_manager`、`lock_manager`、`follow_target_publisher`、`gps_waypoint_follower`、`summon_service`
 
 **图像识别工程师**
 - 维护 `golf_perception` 内所有节点
@@ -126,6 +126,34 @@ colcon build --symlink-install --packages-select golf_perception
 colcon build --symlink-install --packages-select golf_navigation
 colcon build --symlink-install --packages-select golf_mapping
 ```
+
+### 2.4 路点数据隔离（production / test）
+
+路点图 `path_graph.json` 分两份互相隔离，避免测试污染生产数据：
+
+```
+~/golf_ws/data/
+├── production/path_graph.json   # 实车实际运行读写（长期稳定）
+└── test/path_graph.json         # 开发/回放/实验读写（可随时重置）
+```
+
+启动时通过 `mode` launch 参数切换（默认 `production`）：
+
+```bash
+# 实车正常运行（默认）
+ros2 launch golf_bringup follow.launch.py
+# → 读写 ~/golf_ws/data/production/path_graph.json
+
+# 本地开发 / rosbag 回放 / 参数调优
+ros2 launch golf_bringup follow.launch.py mode:=test
+# → 读写 ~/golf_ws/data/test/path_graph.json
+```
+
+**铁律**：任何离线调试、rosbag 回放、参数实验都必须用 `mode:=test`。
+只有在实车正式跑任务时才用默认的 `production`。生产数据改坏了只能靠备份恢复。
+
+`mode` 参数同时透传给读写路点的三个节点：`gps_path_recorder`（写）、
+`gps_waypoint_follower`（读, Dijkstra 规划）、`summon_service`（读, 查目标路点）。
 
 ---
 
