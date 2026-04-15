@@ -8,6 +8,8 @@
 
 import os
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
@@ -15,7 +17,20 @@ from ament_index_python.packages import get_package_share_directory
 def generate_launch_description():
     golf_bringup_dir = get_package_share_directory('golf_bringup')
 
+    # 路点数据源隔离: production(实车实际运行) / test(回放或测试)
+    # 默认 production; 测试时显式传 mode:=test 写入 data/test/path_graph.json
+    data_file = PathJoinSubstitution([
+        os.path.expanduser('~/golf_ws/data'),
+        LaunchConfiguration('mode'),
+        'path_graph.json',
+    ])
+
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'mode',
+            default_value='production',
+            description='path_graph.json 数据源: production (实车) | test (回放/测试)',
+        ),
         # 0. 模式管理器：FOLLOWING / NAVIGATION / E_STOP 三状态机
         Node(
             package='golf_navigation',
@@ -100,6 +115,7 @@ def generate_launch_description():
             package='golf_mapping',
             executable='gps_path_recorder',
             name='gps_path_recorder',
+            parameters=[{'data_file': data_file}],
             output='screen',
         ),
 
@@ -116,6 +132,7 @@ def generate_launch_description():
                 'arrival_tolerance': 5.0,     # 到达判定
                 'use_mppi': False,            # PID模式
                 'use_pure_pursuit': False,    # 前瞻PID
+                'data_file': data_file,       # 按 mode 隔离 production/test
             }],
             output='screen',
         ),
@@ -125,6 +142,7 @@ def generate_launch_description():
             package='golf_navigation',
             executable='summon_service',
             name='summon_service',
+            parameters=[{'data_file': data_file}],
             output='screen',
         ),
 
