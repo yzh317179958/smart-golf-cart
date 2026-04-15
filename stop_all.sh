@@ -4,7 +4,7 @@
 #
 # 重要：不能用 killall python3，会漏杀或误杀。
 # 必须按进程名精确匹配，用 SIGINT 让 ROS2 节点走析构流程。
-# 否则 lidar_emergency_stop / follow_target_publisher 残留会抢占 /cmd_vel，导致手柄失控。
+# 否则 follow_target_publisher 残留会抢占 /cmd_vel，导致手柄失控。
 
 set -e
 
@@ -22,7 +22,6 @@ pkill -INT -f 'lock_manager' 2>/dev/null || true
 pkill -INT -f 'gesture_node' 2>/dev/null || true
 pkill -INT -f 'gps_path_recorder' 2>/dev/null || true
 pkill -INT -f 'gps_waypoint_follower' 2>/dev/null || true
-pkill -INT -f 'lidar_emergency_stop' 2>/dev/null || true
 pkill -INT -f 'summon_service' 2>/dev/null || true
 pkill -INT -f 'mqtt_bridge' 2>/dev/null || true
 
@@ -41,7 +40,6 @@ pkill -INT -f 'tracking_node' 2>/dev/null || true
 pkill -INT -f 'camera_info_fix' 2>/dev/null || true
 pkill -INT -f 'depthimage_to_laserscan' 2>/dev/null || true
 pkill -INT -f 'nmea_serial_driver' 2>/dev/null || true
-pkill -INT -f 'foxglove_bridge' 2>/dev/null || true
 pkill -INT -f 'lx_camera_node' 2>/dev/null || true
 pkill -INT -f 'lslidar_driver' 2>/dev/null || true
 pkill -INT -f 'imu_ned_to_enu' 2>/dev/null || true
@@ -60,11 +58,11 @@ tmux kill-session -t gps_nav 2>/dev/null || true
 tmux kill-session -t gps_pid_nav 2>/dev/null || true
 
 echo "=== 4. 检查残留进程 ==="
-REMAINING=$(pgrep -af 'golf_\|yolo\|camera_info_fix\|foxglove\|lx_camera\|nmea_serial\|lslidar\|controller_server\|planner_server\|bt_navigator\|waypoint_follower\|lifecycle_manager\|lidar_emergency\|summon_service\|mqtt_bridge\|imu_ned_to_enu\|test_logger\|relay.*cmd_vel' 2>/dev/null | grep -v grep || true)
+REMAINING=$(pgrep -af 'golf_\|yolo\|camera_info_fix\|lx_camera\|nmea_serial\|lslidar\|controller_server\|planner_server\|bt_navigator\|waypoint_follower\|lifecycle_manager\|summon_service\|mqtt_bridge\|imu_ned_to_enu\|test_logger\|relay.*cmd_vel' 2>/dev/null | grep -v grep || true)
 if [ -n "$REMAINING" ]; then
     echo "发现残留进程，发送 SIGKILL:"
     echo "$REMAINING"
-    pkill -9 -f 'golf_\|yolo\|camera_info_fix\|foxglove\|lx_camera\|nmea_serial\|lslidar\|controller_server\|planner_server\|bt_navigator\|waypoint_follower\|lifecycle_manager\|lidar_emergency\|summon_service\|mqtt_bridge\|imu_ned_to_enu\|test_logger' 2>/dev/null || true
+    pkill -9 -f 'golf_\|yolo\|camera_info_fix\|lx_camera\|nmea_serial\|lslidar\|controller_server\|planner_server\|bt_navigator\|waypoint_follower\|lifecycle_manager\|summon_service\|mqtt_bridge\|imu_ned_to_enu\|test_logger' 2>/dev/null || true
     sleep 2
 fi
 

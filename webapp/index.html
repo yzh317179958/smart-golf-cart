@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Smart Golf Cart</title>
+<link rel="stylesheet" href="/leaflet.css" />
+<style>
+:root {
+  --green: #2ecc71;
+  --green-dark: #27ae60;
+  --red: #e74c3c;
+  --orange: #f39c12;
+  --blue: #3498db;
+  --bg: #1a1a2e;
+  --bg2: #16213e;
+  --text: #eee;
+  --text-dim: #999;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Top status bar */
+#status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--bg2);
+  border-bottom: 1px solid #333;
+  z-index: 1000;
+  min-height: 44px;
+}
+#status-bar .left { display:flex; align-items:center; gap:8px; }
+#status-bar .right { display:flex; align-items:center; gap:10px; font-size:12px; }
+.status-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--red);
+  flex-shrink: 0;
+}
+.status-dot.online { background: var(--green); }
+.status-dot.connecting { background: var(--orange); animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: 0.3; } }
+#mode-badge {
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+#mode-badge.following { background: var(--green); color: #000; }
+#mode-badge.navigation { background: var(--blue); color: #fff; }
+#mode-badge.e_stop { background: var(--red); color: #fff; }
+
+/* Map */
+#map {
+  flex: 1;
+  z-index: 1;
+}
+
+/* Bottom control panel */
+#controls {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg2);
+  border-top: 1px solid #333;
+  z-index: 1000;
+}
+#info-row {
+  display: flex;
+  justify-content: space-around;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  border-bottom: 1px solid #333;
+}
+#info-row span { text-align:center; }
+#info-row .val { color: var(--text); font-weight: 600; font-size: 13px; display:block; }
+
+#btn-row {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+}
+.btn {
+  flex: 1;
+  padding: 12px 8px;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: transform 0.1s, opacity 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn:active { transform: scale(0.95); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+#btn-summon { background: var(--green); color: #000; }
+#btn-stop { background: var(--red); color: #fff; flex:0.6; }
+#btn-mark { background: var(--blue); color: #fff; flex:0.6; }
+
+/* Toast notifications */
+#toast-container {
+  position: fixed;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+.toast {
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #fff;
+  animation: toastIn 0.3s ease, toastOut 0.3s ease 2.7s;
+  white-space: nowrap;
+}
+.toast.success { background: rgba(46,204,113,0.9); }
+.toast.error { background: rgba(231,76,60,0.9); }
+.toast.info { background: rgba(52,152,219,0.9); }
+@keyframes toastIn { from { opacity:0; transform:translateY(-10px); } to { opacity:1; transform:translateY(0); } }
+@keyframes toastOut { to { opacity:0; transform:translateY(-10px); } }
+
+/* Waypoint popup */
+.wp-popup {
+  text-align: center;
+  min-width: 120px;
+}
+.wp-popup .wp-name {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+.wp-popup .wp-coord {
+  font-size: 11px;
+  color: #666;
+  margin-bottom: 8px;
+}
+.wp-popup button {
+  width: 100%;
+  padding: 6px 12px;
+  background: var(--green-dark);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.wp-popup button:active { background: var(--green); }
+
+/* Nav overlay when navigating */
+#nav-overlay {
+  display: none;
+  position: fixed;
+  bottom: 120px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(52,152,219,0.95);
+  color: #fff;
+  padding: 10px 20px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  z-index: 1500;
+  text-align: center;
+  max-width: 90%;
+}
+#nav-overlay .cancel-nav {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 4px 16px;
+  background: rgba(255,255,255,0.2);
+  border: 1px solid rgba(255,255,255,0.4);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Waypoint number labels */
+.wp-num-label {
+  background: rgba(0,0,0,0.7) !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 4px !important;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* Leaflet overrides for dark */
+.leaflet-control-zoom a {
+  background: var(--bg2) !important;
+  color: var(--text) !important;
+  border-color: #444 !important;
+}
+.leaflet-control-attribution { display:none; }
+</style>
+</head>
+<body>
+
+<!-- Status Bar -->
+<div id="status-bar">
+  <div class="left">
+    <div id="conn-dot" class="status-dot"></div>
+    <span id="conn-text" style="font-size:12px">Connecting...</span>
+    <span id="mode-badge" class="following">FOLLOWING</span>
+  </div>
+  <div class="right">
+    <span id="follow-state" style="font-size:11px;color:var(--text-dim)"></span>
+    <span id="car-online">Car: --</span>
+  </div>
+</div>
+
+<!-- Map -->
+<div id="map"></div>
+
+<!-- Navigation Overlay -->
+<div id="nav-overlay">
+  <div id="nav-target-text">Navigating to ...</div>
+  <span class="cancel-nav" onclick="cancelNav()">Cancel</span>
+</div>
+
+<!-- Bottom Controls -->
+<div id="controls">
+  <div id="info-row">
+    <span>GPS<span class="val" id="gps-display">--</span></span>
+    <span>Waypoints<span class="val" id="wp-count">--</span></span>
+    <span>Distance<span class="val" id="total-dist">--</span></span>
+  </div>
+  <div id="btn-row">
+    <button class="btn" id="btn-summon" onclick="summonToMe()">Come To Me</button>
+    <button class="btn" id="btn-sync" style="background:#8e44ad;color:#fff;flex:0.6" onclick="syncWaypoints()">Sync</button>
+    <button class="btn" id="btn-stop" onclick="toggleStop()">STOP</button>
+  </div>
+</div>
+
+<!-- Toast Container -->
+<div id="toast-container"></div>
+
+<script src="/leaflet.js"></script>
+<script src="/mqtt.min.js"></script>
+<script id="waypoint-data">
+const EMBEDDED_PATH_GRAPH = {"waypoints":{"wp_0001":{"lat":22.65839966447917,"lon":114.22474445402082,"last_traversed":"2026-03-31T16:33:41","traverse_count":1,"blocked_count":0,"label":null},"wp_0002":{"lat":22.65842539061111,"lon":114.22471988184721,"last_traversed":"2026-03-31T16:55:40","traverse_count":2,"blocked_count":0,"label":null},"wp_0003":{"lat":22.658452669892363,"lon":114.22471331007638,"last_traversed":"2026-03-31T16:55:44","traverse_count":2,"blocked_count":0,"label":null},"wp_0004":{"lat":22.658480508916668,"lon":114.22470839015277,"last_traversed":"2026-03-31T16:30:42","traverse_count":1,"blocked_count":0,"label":null},"wp_0005":{"lat":22.658506676602627,"lon":114.2247169612014,"last_traversed":"2026-03-31T16:55:56","traverse_count":3,"blocked_count":0,"label":null},"wp_0006":{"lat":22.658536013440397,"lon":114.22470909002777,"last_traversed":"2026-03-31T16:56:02","traverse_count":3,"blocked_count":0,"label":null},"wp_0007":{"lat":22.65857508994533,"lon":114.22469590713378,"last_traversed":"2026-03-31T16:56:07","traverse_count":3,"blocked_count":0,"label":null},"wp_0008":{"lat":22.658608363997153,"lon":114.22468872307581,"last_traversed":"2026-03-31T16:56:10","traverse_count":2,"blocked_count":0,"label":null},"wp_0009":{"lat":22.658643008511206,"lon":114.22468775930587,"last_traversed":"2026-03-31T16:56:15","traverse_count":3,"blocked_count":0,"label":null},"wp_0010":{"lat":22.658669988396824,"lon":114.22473703965517,"last_traversed":"2026-03-31T16:56:20","traverse_count":3,"blocked_count":0,"label":null},"wp_0011":{"lat":22.658664466333335,"lon":114.22477393516667,"last_traversed":"2026-03-31T10:46:44","traverse_count":1,"blocked_count":0,"label":null},"wp_0012":{"lat":22.658675956138687,"lon":114.22480545497346,"last_traversed":"2026-03-31T10:46:47","traverse_count":2,"blocked_count":0,"label":null},"wp_0013":{"lat":22.658683927805352,"lon":114.22483729701511,"last_traversed":"2026-03-31T10:46:50","traverse_count":2,"blocked_count":0,"label":null},"wp_0014":{"lat":22.658690592055354,"lon":114.22486690593179,"last_traversed":"2026-03-31T10:46:53","traverse_count":2,"blocked_count":0,"label":null},"wp_0015":{"lat":22.658702091180352,"lon":114.22491176501512,"last_traversed":"2026-03-31T10:46:59","traverse_count":2,"blocked_count":0,"label":null},"wp_0016":{"lat":22.658701769333334,"lon":114.22495461366667,"last_traversed":"2026-03-31T10:47:02","traverse_count":1,"blocked_count":0,"label":null},"wp_0017":{"lat":22.658717003847023,"lon":114.22497759339012,"last_traversed":"2026-03-31T10:47:05","traverse_count":2,"blocked_count":0,"label":null},"wp_0018":{"lat":22.658725252388685,"lon":114.22501442059846,"last_traversed":"2026-03-31T10:47:09","traverse_count":2,"blocked_count":0,"label":null},"wp_0019":{"lat":22.658734645263685,"lon":114.22505280597346,"last_traversed":"2026-03-31T10:47:12","traverse_count":2,"blocked_count":0,"label":null},"wp_0020":{"lat":22.6587263965,"lon":114.22508056,"last_traversed":"2026-03-31T10:47:15","traverse_count":1,"blocked_count":0,"label":null},"wp_0021":{"lat":22.65874228447202,"lon":114.22510478551513,"last_traversed":"2026-03-31T10:47:18","traverse_count":2,"blocked_count":0,"label":null},"wp_0022":{"lat":22.658731674333332,"lon":114.22513858966667,"last_traversed":"2026-03-31T10:47:21","traverse_count":1,"blocked_count":0,"label":null},"wp_0023":{"lat":22.65875642434702,"lon":114.22515407647347,"last_traversed":"2026-03-31T10:47:24","traverse_count":2,"blocked_count":0,"label":null},"wp_0024":{"lat":22.658765480222016,"lon":114.2251897744318,"last_traversed":"2026-03-31T10:47:27","traverse_count":2,"blocked_count":0,"label":null},"wp_0025":{"lat":22.658773233847022,"lon":114.22522657747348,"last_traversed":"2026-03-31T10:47:30","traverse_count":2,"blocked_count":0,"label":null},"wp_0026":{"lat":22.658783059332684,"lon":114.2252653742521,"last_traversed":"2026-03-31T16:57:04","traverse_count":2,"blocked_count":0,"label":null},"wp_0027":{"lat":22.658793260781987,"lon":114.22530031895492,"last_traversed":"2026-03-31T16:57:07","traverse_count":2,"blocked_count":0,"label":null},"wp_0028":{"lat":22.658800562284128,"lon":114.22533329766861,"last_traversed":"2026-03-31T16:57:09","traverse_count":2,"blocked_count":0,"label":null},"wp_0029":{"lat":22.658807541899428,"lon":114.22536530981519,"last_traversed":"2026-03-31T16:57:12","traverse_count":2,"blocked_count":0,"label":null},"wp_0030":{"lat":22.658814341233423,"lon":114.2253962579473,"last_traversed":"2026-03-31T16:57:14","traverse_count":2,"blocked_count":0,"label":null},"wp_0031":{"lat":22.658826658550737,"lon":114.22543689652802,"last_traversed":"2026-03-31T16:57:19","traverse_count":3,"blocked_count":0,"label":null},"wp_0032":{"lat":22.658840087393667,"lon":114.22550017011878,"last_traversed":"2026-03-31T16:57:24","traverse_count":3,"blocked_count":0,"label":null},"wp_0033":{"lat":22.65880316422917,"lon":114.2255337378125,"last_traversed":"2026-03-31T16:32:22","traverse_count":1,"blocked_count":0,"label":null},"wp_0034":{"lat":22.658769624201845,"lon":114.22555898042967,"last_traversed":"2026-03-31T16:57:43","traverse_count":4,"blocked_count":0,"label":null},"wp_0035":{"lat":22.65874124083622,"lon":114.22556839420733,"last_traversed":"2026-03-31T16:57:46","traverse_count":2,"blocked_count":0,"label":null},"wp_0036":{"lat":22.65870423133025,"lon":114.22557463524872,"last_traversed":"2026-03-31T16:57:51","traverse_count":3,"blocked_count":0,"label":null},"wp_0037":{"lat":22.658666633591103,"lon":114.22558298585074,"last_traversed":"2026-03-31T16:57:53","traverse_count":2,"blocked_count":0,"label":null},"wp_0038":{"lat":22.658636660185174,"lon":114.22558496374154,"last_traversed":"2026-03-31T16:57:56","traverse_count":2,"blocked_count":0,"label":null},"wp_0039":{"lat":22.658590112388982,"lon":114.22558739796386,"last_traversed":"2026-03-31T16:58:01","traverse_count":3,"blocked_count":0,"label":null},"wp_0040":{"lat":22.658552055956903,"lon":114.2255788095828,"last_traversed":"2026-03-31T16:58:03","traverse_count":2,"blocked_count":0,"label":null},"wp_0041":{"lat":22.65853429647602,"lon":114.22556204080158,"last_traversed":"2026-03-31T16:58:05","traverse_count":2,"blocked_count":0,"label":null},"wp_0042":{"lat":22.65852097099211,"lon":114.2255393151128,"last_traversed":"2026-03-31T16:58:08","traverse_count":2,"blocked_count":0,"label":null},"wp_0043":{"lat":22.65850418665774,"lon":114.22550340581108,"last_traversed":"2026-03-31T16:58:13","traverse_count":3,"blocked_count":0,"label":null},"wp_0044":{"lat":22.658488702777213,"lon":114.22545946114073,"last_traversed":"2026-03-31T16:58:15","traverse_count":2,"blocked_count":0,"label":null},"wp_0045":{"lat":22.658473509038107,"lon":114.22541704227386,"last_traversed":"2026-03-31T16:58:20","traverse_count":3,"blocked_count":0,"label":null},"wp_0046":{"lat":22.658463236532363,"lon":114.22537196026795,"last_traversed":"2026-03-31T16:58:23","traverse_count":2,"blocked_count":0,"label":null},"wp_0047":{"lat":22.658456039250495,"lon":114.22533148176628,"last_traversed":"2026-03-31T15:37:46","traverse_count":2,"blocked_count":0,"label":null},"wp_0048":{"lat":22.658456377500002,"lon":114.22529832258333,"last_traversed":"2026-03-31T15:37:48","traverse_count":1,"blocked_count":0,"label":null},"wp_0049":{"lat":22.658438698188583,"lon":114.22526907925425,"last_traversed":"2026-03-31T16:33:01","traverse_count":2,"blocked_count":0,"label":null},"wp_0050":{"lat":22.658425373797325,"lon":114.22523196008126,"last_traversed":"2026-03-31T16:58:35","traverse_count":2,"blocked_count":0,"label":null},"wp_0051":{"lat":22.658405674929487,"lon":114.22519515568077,"last_traversed":"2026-03-31T16:58:40","traverse_count":3,"blocked_count":0,"label":null},"wp_0052":{"lat":22.65838523784055,"lon":114.22515514323456,"last_traversed":"2026-03-31T16:58:43","traverse_count":2,"blocked_count":0,"label":null},"wp_0053":{"lat":22.65838847683834,"lon":114.2251080969357,"last_traversed":"2026-03-31T16:58:47","traverse_count":3,"blocked_count":0,"label":null},"wp_0054":{"lat":22.658387945747513,"lon":114.22506515924576,"last_traversed":"2026-03-31T16:58:50","traverse_count":2,"blocked_count":0,"label":null},"wp_0055":{"lat":22.65839544740278,"lon":114.22503803045834,"last_traversed":"2026-03-31T16:33:20","traverse_count":1,"blocked_count":0,"label":null},"wp_0056":{"lat":22.658382867773526,"lon":114.22500860834056,"last_traversed":"2026-03-31T16:58:55","traverse_count":3,"blocked_count":0,"label":null},"wp_0057":{"lat":22.658379827457892,"lon":114.22496215477179,"last_traversed":"2026-03-31T16:58:57","traverse_count":2,"blocked_count":0,"label":null},"wp_0058":{"lat":22.658373172998466,"lon":114.22492147273348,"last_traversed":"2026-03-31T16:59:00","traverse_count":2,"blocked_count":0,"label":null},"wp_0059":{"lat":22.658367679369277,"lon":114.22488343889749,"last_traversed":"2026-03-31T16:59:05","traverse_count":3,"blocked_count":0,"label":null},"wp_0060":{"lat":22.6583527778652,"lon":114.22484145570749,"last_traversed":"2026-03-31T10:49:46","traverse_count":2,"blocked_count":0,"label":null},"wp_0061":{"lat":22.658380216992487,"lon":114.2248000287711,"last_traversed":"2026-03-31T16:59:12","traverse_count":3,"blocked_count":0,"label":null}},"edges":[{"from":"wp_0001","to":"wp_0002","distance":3.81},{"from":"wp_0002","to":"wp_0003","distance":3.11},{"from":"wp_0003","to":"wp_0004","distance":3.14},{"from":"wp_0004","to":"wp_0005","distance":3.04},{"from":"wp_0005","to":"wp_0006","distance":3.36},{"from":"wp_0006","to":"wp_0007","distance":4.55},{"from":"wp_0007","to":"wp_0008","distance":3.77},{"from":"wp_0008","to":"wp_0009","distance":3.85},{"from":"wp_0009","to":"wp_0010","distance":5.88},{"from":"wp_0010","to":"wp_0011","distance":3.84},{"from":"wp_0011","to":"wp_0012","distance":3.48},{"from":"wp_0012","to":"wp_0013","distance":3.39},{"from":"wp_0013","to":"wp_0014","distance":3.13},{"from":"wp_0014","to":"wp_0015","distance":4.78},{"from":"wp_0015","to":"wp_0016","distance":4.4},{"from":"wp_0016","to":"wp_0017","distance":2.9},{"from":"wp_0017","to":"wp_0018","distance":3.89},{"from":"wp_0018","to":"wp_0019","distance":4.07},{"from":"wp_0019","to":"wp_0020","distance":2.99},{"from":"wp_0020","to":"wp_0021","distance":3.05},{"from":"wp_0021","to":"wp_0022","distance":3.66},{"from":"wp_0022","to":"wp_0023","distance":3.18},{"from":"wp_0023","to":"wp_0024","distance":3.8},{"from":"wp_0024","to":"wp_0025","distance":3.87},{"from":"wp_0025","to":"wp_0026","distance":4.13},{"from":"wp_0026","to":"wp_0027","distance":3.76},{"from":"wp_0027","to":"wp_0028","distance":3.48},{"from":"wp_0028","to":"wp_0029","distance":3.38},{"from":"wp_0029","to":"wp_0030","distance":3.26},{"from":"wp_0030","to":"wp_0031","distance":4.39},{"from":"wp_0031","to":"wp_0032","distance":6.66},{"from":"wp_0032","to":"wp_0033","distance":5.36},{"from":"wp_0033","to":"wp_0034","distance":4.54},{"from":"wp_0034","to":"wp_0035","distance":3.3},{"from":"wp_0035","to":"wp_0036","distance":4.16},{"from":"wp_0036","to":"wp_0037","distance":4.27},{"from":"wp_0037","to":"wp_0038","distance":3.34},{"from":"wp_0038","to":"wp_0039","distance":5.18},{"from":"wp_0039","to":"wp_0040","distance":4.32},{"from":"wp_0040","to":"wp_0041","distance":2.62},{"from":"wp_0041","to":"wp_0042","distance":2.76},{"from":"wp_0042","to":"wp_0043","distance":4.13},{"from":"wp_0043","to":"wp_0044","distance":4.83},{"from":"wp_0044","to":"wp_0045","distance":4.67},{"from":"wp_0045","to":"wp_0046","distance":4.76},{"from":"wp_0046","to":"wp_0047","distance":4.23},{"from":"wp_0047","to":"wp_0048","distance":3.4},{"from":"wp_0048","to":"wp_0049","distance":3.59},{"from":"wp_0049","to":"wp_0050","distance":4.09},{"from":"wp_0050","to":"wp_0051","distance":4.37},{"from":"wp_0051","to":"wp_0052","distance":4.69},{"from":"wp_0052","to":"wp_0053","distance":4.84},{"from":"wp_0053","to":"wp_0054","distance":4.41},{"from":"wp_0054","to":"wp_0055","distance":2.91},{"from":"wp_0055","to":"wp_0056","distance":3.33},{"from":"wp_0056","to":"wp_0057","distance":4.78},{"from":"wp_0057","to":"wp_0058","distance":4.24},{"from":"wp_0058","to":"wp_0059","distance":3.95},{"from":"wp_0059","to":"wp_0060","distance":4.62},{"from":"wp_0060","to":"wp_0061","distance":5.23},{"from":"wp_0061","to":"wp_0001","distance":6.1},{"from":"wp_0003","to":"wp_0005","distance":6.02},{"from":"wp_0032","to":"wp_0034","distance":9.89},{"from":"wp_0054","to":"wp_0056","distance":5.83}],"wp_counter":195};
+
+
+
+</script>
+<script>
+// ── Config ──
+const MQTT_WS_URL = `ws://${location.hostname}:9001/mqtt`;
+const VEHICLE_ID = 'cart_01';
+const TOPIC_PREFIX = `golf/${VEHICLE_ID}`;
+
+// ── State ──
+let mqttClient = null;
+let carMarker = null;
+let carPos = null;
+let waypointMarkers = {};
+let pathLines = [];
+let lastHeartbeat = 0;
+let currentMode = 'following';
+let isNavigating = false;
+let navTarget = '';
+let pathGraph = null;
+
+// ── Map Init ──
+const map = L.map('map', {
+  zoomControl: true,
+  attributionControl: false
+}).setView([22.658, 114.225], 18);
+
+// Satellite tile
+const esri = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 20
+}).addTo(map);
+
+const gaode = L.tileLayer('https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}', {
+  subdomains: '1234',
+  maxZoom: 20
+});
+
+L.control.layers({
+  'Esri Satellite': esri,
+  'Gaode Satellite': gaode
+}, null, { position: 'topright' }).addTo(map);
+
+// Car icon
+const carIcon = L.divIcon({
+  className: '',
+  html: `<div style="
+    width:20px; height:20px;
+    background:var(--green);
+    border:3px solid #fff;
+    border-radius:50%;
+    box-shadow:0 0 8px rgba(46,204,113,0.6);
+  "></div>`,
+  iconSize: [20, 20],
+  iconAnchor: [10, 10]
+});
+
+// ── Load Waypoints ──
+function loadWaypoints() {
+  if (typeof EMBEDDED_PATH_GRAPH === 'undefined') return;
+  pathGraph = EMBEDDED_PATH_GRAPH;
+  renderWaypoints();
+}
+
+function renderWaypoints() {
+  if (!pathGraph) return;
+
+  // Clear old
+  Object.values(waypointMarkers).forEach(m => map.removeLayer(m));
+  waypointMarkers = {};
+  pathLines.forEach(l => map.removeLayer(l));
+  pathLines = [];
+
+  const wps = pathGraph.waypoints;
+  const wpIds = Object.keys(wps);
+
+  // Update stats
+  document.getElementById('wp-count').textContent = wpIds.length;
+  const totalDist = pathGraph.edges.reduce((s, e) => s + (e.distance || 0), 0);
+  document.getElementById('total-dist').textContent = totalDist > 1000
+    ? (totalDist / 1000).toFixed(1) + 'km'
+    : Math.round(totalDist) + 'm';
+
+  // Draw edges
+  pathGraph.edges.forEach(edge => {
+    const from = wps[edge.from];
+    const to = wps[edge.to];
+    if (from && to) {
+      const line = L.polyline(
+        [[from.lat, from.lon], [to.lat, to.lon]],
+        { color: '#3498db', weight: 2, opacity: 0.6 }
+      ).addTo(map);
+      pathLines.push(line);
+    }
+  });
+
+  // Draw waypoints
+  wpIds.forEach(id => {
+    const wp = wps[id];
+    const isLabeled = wp.label && wp.label !== null;
+    // Extract number from wp_XXXX for display
+    const wpNum = id.replace('wp_', '').replace(/^0+/, '') || '0';
+    const displayName = isLabeled ? wp.label : id;
+
+    const icon = L.divIcon({
+      className: '',
+      html: `<div style="
+        width:${isLabeled ? 14 : 10}px;
+        height:${isLabeled ? 14 : 10}px;
+        background:${isLabeled ? '#f39c12' : '#3498db'};
+        border:2px solid #fff;
+        border-radius:50%;
+        ${isLabeled ? 'box-shadow:0 0 6px rgba(243,156,18,0.6);' : ''}
+      "></div>`,
+      iconSize: [isLabeled ? 14 : 10, isLabeled ? 14 : 10],
+      iconAnchor: [isLabeled ? 7 : 5, isLabeled ? 7 : 5]
+    });
+
+    const marker = L.marker([wp.lat, wp.lon], { icon })
+      .addTo(map)
+      .bindPopup(`
+        <div class="wp-popup">
+          <div class="wp-name">${displayName}</div>
+          <div class="wp-coord">${wp.lat.toFixed(6)}, ${wp.lon.toFixed(6)}</div>
+          <button onclick="navigateTo('${displayName}')">Navigate Here</button>
+        </div>
+      `);
+
+    // Show number/label on every waypoint
+    marker.bindTooltip(isLabeled ? wp.label : wpNum, {
+      permanent: true,
+      direction: 'right',
+      offset: [6, 0],
+      className: 'wp-num-label'
+    });
+
+    waypointMarkers[id] = marker;
+  });
+
+  // Fit map to waypoints
+  if (wpIds.length > 0) {
+    const bounds = L.latLngBounds(wpIds.map(id => [wps[id].lat, wps[id].lon]));
+    map.fitBounds(bounds, { padding: [30, 30] });
+  }
+}
+
+// ── MQTT Connection ──
+function connectMQTT() {
+  updateConn('connecting');
+
+  mqttClient = mqtt.connect(MQTT_WS_URL, {
+    clientId: 'webapp_' + Math.random().toString(16).slice(2, 8),
+    clean: true,
+    reconnectPeriod: 3000,
+    connectTimeout: 5000
+  });
+
+  mqttClient.on('connect', () => {
+    updateConn('online');
+    mqttClient.subscribe(`${TOPIC_PREFIX}/status/#`);
+    toast('MQTT connected', 'success');
+  });
+
+  mqttClient.on('close', () => {
+    updateConn('offline');
+  });
+
+  mqttClient.on('error', (err) => {
+    console.error('MQTT error:', err);
+    updateConn('offline');
+  });
+
+  mqttClient.on('message', (topic, payload) => {
+    const msg = payload.toString();
+    const sub = topic.replace(`${TOPIC_PREFIX}/status/`, '');
+
+    switch (sub) {
+      case 'gps':
+        handleGPS(msg);
+        break;
+      case 'mode':
+        handleMode(msg);
+        break;
+      case 'heartbeat':
+        lastHeartbeat = Date.now();
+        document.getElementById('car-online').textContent = 'Car: Online';
+        document.getElementById('car-online').style.color = 'var(--green)';
+        break;
+      case 'path_stats':
+        handleStats(msg);
+        break;
+      case 'summon_result':
+        handleSummonResult(msg);
+        break;
+      case 'nav_complete':
+        // Only handle if not via summon (summon_result already covers it)
+        if (!isNavigating) handleNavComplete(msg);
+        break;
+      case 'follow':
+        handleFollow(msg);
+        break;
+    }
+  });
+}
+
+function updateConn(state) {
+  const dot = document.getElementById('conn-dot');
+  const text = document.getElementById('conn-text');
+  dot.className = 'status-dot ' + (state === 'online' ? 'online' : state === 'connecting' ? 'connecting' : '');
+  text.textContent = state === 'online' ? 'Connected' : state === 'connecting' ? 'Connecting...' : 'Disconnected';
+}
+
+// ── Message Handlers ──
+function handleGPS(msg) {
+  try {
+    const data = JSON.parse(msg);
+    carPos = { lat: data.lat, lon: data.lon };
+
+    // Update display
+    document.getElementById('gps-display').textContent =
+      data.lat.toFixed(5) + ', ' + data.lon.toFixed(5);
+
+    // Update car marker
+    if (!carMarker) {
+      carMarker = L.marker([data.lat, data.lon], { icon: carIcon, zIndexOffset: 1000 }).addTo(map);
+    } else {
+      carMarker.setLatLng([data.lat, data.lon]);
+    }
+  } catch (e) {
+    console.error('GPS parse error:', e);
+  }
+}
+
+function handleMode(msg) {
+  currentMode = msg.toLowerCase().trim();
+  const badge = document.getElementById('mode-badge');
+  badge.textContent = msg.toUpperCase();
+  badge.className = 'following'; // reset
+
+  if (currentMode.includes('navigation')) {
+    badge.className = 'navigation';
+  } else if (currentMode.includes('e_stop') || currentMode.includes('estop')) {
+    badge.className = 'e_stop';
+  } else {
+    badge.className = 'following';
+  }
+
+  // Update STOP/RESUME button
+  const stopBtn = document.getElementById('btn-stop');
+  if (currentMode.includes('e_stop') || currentMode.includes('estop')) {
+    stopBtn.textContent = 'RESUME';
+    stopBtn.style.background = 'var(--green)';
+    stopBtn.style.color = '#000';
+  } else {
+    stopBtn.textContent = 'STOP';
+    stopBtn.style.background = 'var(--red)';
+    stopBtn.style.color = '#fff';
+  }
+
+  // Update nav overlay
+  if (!currentMode.includes('navigation') && isNavigating) {
+    isNavigating = false;
+    document.getElementById('nav-overlay').style.display = 'none';
+  }
+}
+
+function handleStats(msg) {
+  try {
+    const data = JSON.parse(msg);
+    if (data.waypoint_count !== undefined) {
+      document.getElementById('wp-count').textContent = data.waypoint_count;
+    }
+    if (data.total_distance_m !== undefined) {
+      const d = data.total_distance_m;
+      document.getElementById('total-dist').textContent = d > 1000
+        ? (d / 1000).toFixed(1) + 'km' : Math.round(d) + 'm';
+    }
+  } catch (e) {}
+}
+
+function handleFollow(msg) {
+  const el = document.getElementById('follow-state');
+  const state = msg.toLowerCase().trim();
+  const labels = { tracking: 'Tracking', idle: '', lost_slow: 'Lost...', lost_wait: 'Lost', lost_reset: '' };
+  el.textContent = labels[state] || state;
+  el.style.color = state === 'tracking' ? 'var(--green)' : 'var(--orange)';
+}
+
+function handleSummonResult(msg) {
+  try {
+    const data = JSON.parse(msg);
+    if (data.status === 'arrived') {
+      toast('Arrived at destination!', 'success');
+      isNavigating = false;
+      document.getElementById('nav-overlay').style.display = 'none';
+    } else if (data.status === 'error') {
+      toast('Navigation error: ' + (data.detail || ''), 'error');
+    } else if (data.status === 'navigating') {
+      toast('Navigation started: ' + (data.detail || ''), 'info');
+    }
+  } catch (e) {
+    toast('Summon: ' + msg, 'info');
+  }
+}
+
+function handleNavComplete(msg) {
+  const status = msg.toLowerCase().trim();
+  if (status === 'arrived') {
+    toast('Navigation complete - arrived!', 'success');
+  } else if (status === 'failed' || status === 'blocked') {
+    toast('Navigation ' + status, 'error');
+  } else if (status === 'canceled') {
+    toast('Navigation canceled', 'info');
+  }
+  isNavigating = false;
+  document.getElementById('nav-overlay').style.display = 'none';
+}
+
+// ── Actions ──
+function publishCmd(cmd, payload) {
+  if (!mqttClient || !mqttClient.connected) {
+    toast('MQTT not connected', 'error');
+    return false;
+  }
+  mqttClient.publish(`${TOPIC_PREFIX}/cmd/${cmd}`, payload, { qos: 1 });
+  return true;
+}
+
+function navigateTo(target) {
+  if (!confirm(`Navigate to ${target}?`)) return;
+
+  map.closePopup();
+  const payload = JSON.stringify({ target: target });
+  if (publishCmd('summon', payload)) {
+    navTarget = target;
+    isNavigating = true;
+    document.getElementById('nav-target-text').textContent = `Navigating to ${target}...`;
+    document.getElementById('nav-overlay').style.display = 'block';
+    toast(`Sent navigation command: ${target}`, 'info');
+  }
+}
+
+function summonToMe() {
+  const btn = document.getElementById('btn-summon');
+
+  // Try geolocation first, fall back to manual input
+  if (navigator.geolocation && location.protocol === 'https:') {
+    btn.disabled = true;
+    btn.textContent = 'Getting GPS...';
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        btn.disabled = false;
+        btn.textContent = 'Come To Me';
+        _doSummonGPS(pos.coords.latitude, pos.coords.longitude);
+      },
+      (err) => {
+        btn.disabled = false;
+        btn.textContent = 'Come To Me';
+        toast('Auto GPS failed, please enter manually', 'info');
+        _summonManualInput();
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  } else {
+    // HTTP or no geolocation — manual input
+    _summonManualInput();
+  }
+}
+
+function _summonManualInput() {
+  const input = prompt('Enter your GPS coordinates (lat, lon):\nExample: 22.658, 114.225');
+  if (!input) return;
+  const parts = input.split(',').map(s => parseFloat(s.trim()));
+  if (parts.length !== 2 || isNaN(parts[0]) || isNaN(parts[1])) {
+    toast('Invalid format. Use: lat, lon', 'error');
+    return;
+  }
+  _doSummonGPS(parts[0], parts[1]);
+}
+
+function _doSummonGPS(lat, lon) {
+  if (!confirm(`Summon cart to (${lat.toFixed(5)}, ${lon.toFixed(5)})?`)) return;
+
+  const payload = JSON.stringify({ lat, lon });
+  if (publishCmd('summon', payload)) {
+    // Show position on map
+    L.marker([lat, lon], {
+      icon: L.divIcon({
+        className: '',
+        html: '<div style="width:16px;height:16px;background:#e74c3c;border:3px solid #fff;border-radius:50%;box-shadow:0 0 8px rgba(231,76,60,0.6);"></div>',
+        iconSize: [16, 16],
+        iconAnchor: [8, 8]
+      })
+    }).addTo(map).bindPopup('Summon target');
+
+    navTarget = 'your location';
+    isNavigating = true;
+    document.getElementById('nav-target-text').textContent = 'Cart coming to you...';
+    document.getElementById('nav-overlay').style.display = 'block';
+    toast('Summoning cart to location', 'info');
+  }
+}
+
+function syncWaypoints() {
+  const btn = document.getElementById('btn-sync');
+  btn.disabled = true;
+  btn.textContent = 'Syncing...';
+  toast('Pulling waypoints from car...', 'info');
+
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', '/api/sync?t=' + Date.now(), true);
+  xhr.timeout = 20000;
+  xhr.onload = function() {
+    btn.disabled = false;
+    btn.textContent = 'Sync';
+    try {
+      var r = JSON.parse(xhr.responseText);
+      if (r.ok) {
+        toast(r.message, 'success');
+        // Reload page to get rebuilt HTML with new data
+        setTimeout(function() { location.reload(); }, 1500);
+      } else {
+        toast('Sync failed: ' + r.message, 'error');
+      }
+    } catch(e) {
+      toast('Sync error: ' + e, 'error');
+    }
+  };
+  xhr.onerror = function() {
+    btn.disabled = false; btn.textContent = 'Sync';
+    toast('Sync network error', 'error');
+  };
+  xhr.ontimeout = function() {
+    btn.disabled = false; btn.textContent = 'Sync';
+    toast('Sync timeout - car offline?', 'error');
+  };
+  xhr.send();
+}
+
+function toggleStop() {
+  if (currentMode.includes('e_stop') || currentMode.includes('estop')) {
+    publishCmd('mode', 'resume');
+    toast('Resume command sent', 'success');
+  } else {
+    publishCmd('mode', 'e_stop');
+    toast('STOP command sent!', 'error');
+  }
+}
+
+function cancelNav() {
+  publishCmd('mode', 'cancel');
+  isNavigating = false;
+  document.getElementById('nav-overlay').style.display = 'none';
+  toast('Navigation canceled', 'info');
+}
+
+// ── Toasts ──
+function toast(msg, type = 'info') {
+  const container = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// ── Heartbeat check ──
+setInterval(() => {
+  if (lastHeartbeat > 0 && Date.now() - lastHeartbeat > 12000) {
+    document.getElementById('car-online').textContent = 'Car: Offline';
+    document.getElementById('car-online').style.color = 'var(--red)';
+  }
+}, 5000);
+
+// ── Init ──
+loadWaypoints();
+try { connectMQTT(); } catch(e) { console.error('MQTT init error:', e); }
+
+// Center on car when tapping GPS display
+document.getElementById('gps-display').style.cursor = 'pointer';
+document.getElementById('gps-display').addEventListener('click', () => {
+  if (carPos) map.setView([carPos.lat, carPos.lon], 19);
+});
+</script>
+</body>
+</html>

@@ -1,13 +1,14 @@
-"""GPS 路点导航器（v8.1: MPPI 避障模式 + PID 回退模式）
+"""GPS 路点导航器（v8.3: MPPI 避障模式 + 脉冲回退模式）
 
-MPPI 模式 (use_mppi=true, 默认):
+MPPI 模式 (use_mppi=true):
   /nav_trigger → Dijkstra路径 → 样条曲线平滑 → 密集path
   → FollowPath action → MPPI 避障执行 → /cmd_vel_nav
   GPS 到达判定 → 切下一段 path → 直到终点 → /nav_complete "arrived"
 
-PID 回退模式 (use_mppi=false):
-  /nav_trigger → Dijkstra → 稀疏化 → GPS-PID逐点跟随 → /cmd_vel_nav
-  防蛇形: GPS平滑+死区+稀疏化+低通滤波+G90航向
+脉冲回退模式 (use_mppi=false, 默认):
+  /nav_trigger → Dijkstra → 前瞻+1方位角 → 25°死区脉冲修正
+  状态机: STRAIGHT → NAV_PULSE(0.08,0.5s) → NAV_COOL(0,1s) → STRAIGHT
+  侧边护栏: WALL_PULSE(0.05,0.3s) → WALL_COOL(0,0.5s) 优先级最高
 
 接口:
   输入: /nav_trigger (String)     — 目标名、路点ID
@@ -82,14 +83,18 @@ class GpsWaypointFollower(Node):
         self.declare_parameter('slowdown_distance', 10.0)    # 开始减速距离 (m)
         self.declare_parameter('waypoint_skip', 2)           # 直线段跳跃数
         self.declare_parameter('turn_threshold', 30.0)       # 拐点判定角度 (°)
-        self.declare_parameter('bearing_dead_zone', 5.0)     # 方位角死区 (°)
+        self.declare_parameter('bearing_dead_zone', 20.0)    # 脉冲触发死区 (°)
         self.declare_parameter('gps_smooth_window', 3)       # GPS 平滑窗口
-        self.declare_parameter('angular_smooth', 0.3)        # 角速度低通系数 (0-1, 越小越平滑)
-        self.declare_parameter('ang_kp', 0.8)                # 转向 P
-        self.declare_parameter('ang_kd', 0.15)               # 转向 D
         self.declare_parameter('lin_kp', 0.1)                # 速度 P
-        self.declare_parameter('max_angular', 0.8)           # 最大角速度 (rad/s)
+        self.declare_parameter('max_angular', 0.30)          # 安全上限角速度 (rad/s)
         self.declare_parameter('gps_timeout', 3.0)           # GPS 超时 (s)
+        self.declare_parameter('pulse_nav_w', 0.28)          # 方向修正脉冲角速度 (rad/s)
+        self.declare_parameter('pulse_nav_on', 0.4)          # 方向脉冲持续 (s)
+        self.declare_parameter('pulse_nav_off', 0.3)         # 方向冷却持续 (s)
+        self.declare_parameter('pulse_wall_w', 0.18)         # 避墙脉冲角速度 (rad/s)
+        self.declare_parameter('pulse_wall_on', 0.4)         # 避墙脉冲持续 (s)
+        self.declare_parameter('pulse_wall_off', 0.3)        # 避墙冷却持续 (s)
+        self.declare_parameter('wall_threshold', 3.5)        # 侧边护栏触发距离 (m)
         self.declare_parameter('cmd_vel_topic', '/cmd_vel_nav')
         self.declare_parameter('use_mppi', False)            # MPPI 模式
         self.declare_parameter('use_pure_pursuit', False)    # Pure Pursuit 模式（替代前瞻PID）
@@ -104,12 +109,16 @@ class GpsWaypointFollower(Node):
         self.turn_thresh = self.get_parameter('turn_threshold').value
         self.dead_zone = self.get_parameter('bearing_dead_zone').value
         self.gps_window = self.get_parameter('gps_smooth_window').value
-        self.ang_smooth = self.get_parameter('angular_smooth').value
-        self.ang_kp = self.get_parameter('ang_kp').value
-        self.ang_kd = self.get_parameter('ang_kd').value
         self.lin_kp = self.get_parameter('lin_kp').value
         self.max_angular = self.get_parameter('max_angular').value
         self.gps_timeout = self.get_parameter('gps_timeout').value
+        self.pulse_nav_w = self.get_parameter('pulse_nav_w').value
+        self.pulse_nav_on_ticks = round(self.get_parameter('pulse_nav_on').value / 0.1)
+        self.pulse_nav_off_ticks = round(self.get_parameter('pulse_nav_off').value / 0.1)
+        self.pulse_wall_w = self.get_parameter('pulse_wall_w').value
+        self.pulse_wall_on_ticks = round(self.get_parameter('pulse_wall_on').value / 0.1)
+        self.pulse_wall_off_ticks = round(self.get_parameter('pulse_wall_off').value / 0.1)
+        self.wall_threshold = self.get_parameter('wall_threshold').value
         cmd_topic = self.get_parameter('cmd_vel_topic').value
         self.use_mppi = self.get_parameter('use_mppi').value and _NAV2_AVAILABLE
         self.use_pure_pursuit = self.get_parameter('use_pure_pursuit').value
@@ -142,9 +151,12 @@ class GpsWaypointFollower(Node):
         self.heading_buffer = []    # [(deg, time), ...] 航向滚动窗口，用于平均
         self.gps_time = 0.0        # GPS 最后更新时间
 
-        # === PID 状态 ===
-        self.prev_error_deg = 0.0   # 上一次方位角误差
-        self.prev_angular_z = 0.0   # 低通滤波器状态
+        # === 脉冲状态机 ===
+        # 0=直行 1=方向脉冲 2=方向冷却 3=避墙脉冲 4=避墙冷却
+        self.pulse_state = 0
+        self.pulse_ticks = 0
+        self.pulse_dir = 0        # +1=左转(w>0), -1=右转(w<0)
+        self._wall_same_dir = False
 
         # === 阻断状态（收到 /nav_blocked 时停车通知用户，不自动后退） ===
         self.blocked = False
@@ -178,13 +190,12 @@ class GpsWaypointFollower(Node):
 
         if self.use_mppi:
             mode_label = 'MPPI样条避障'
-        elif self.use_pure_pursuit:
-            mode_label = f'Pure Pursuit (L={self.lookahead_dist}m)'
         else:
-            mode_label = f'前瞻PID (死区={self.dead_zone}°)'
+            mode_label = (f'脉冲式 (死区={self.dead_zone}° '
+                          f'nav_w={self.pulse_nav_w} wall_w={self.pulse_wall_w})')
         self.get_logger().info(
             f'GPS 路点导航器启动 | 模式: {mode_label} | 路点: {len(self.waypoints)} | '
-            f'到达容差: {self.arrival_tol}m | kp={self.ang_kp} max_w={self.max_angular}')
+            f'到达容差: {self.arrival_tol}m | max_w={self.max_angular}')
 
     # ================================================================
     #  回调（轻量）
@@ -210,20 +221,20 @@ class GpsWaypointFollower(Node):
             self.heading_buffer = self.heading_buffer[-20:]
 
     def _scan_cb(self, msg: LaserScan):
-        """从 /scan 提取前方左/前方右最近距离（前方 3m 扇区）"""
+        """从 /scan 提取前方左/前方右最近距离（前方 ±60° 扇区）"""
         min_front_left = float('inf')   # 前方偏左 0°~60°
-        min_front_right = float('inf')  # 前方偏右 0°~-60°
+        min_front_right = float('inf')  # 前方偏右 -60°~0°
         for i, r in enumerate(msg.ranges):
             if r <= msg.range_min or r >= msg.range_max or math.isinf(r) or math.isnan(r):
                 continue
-            if r > 3.0:
-                continue  # 只关心 3m 以内
+            if r > 5.0:
+                continue  # 只关心 5m 以内
             angle = msg.angle_min + i * msg.angle_increment
             angle = (angle + math.pi) % (2.0 * math.pi) - math.pi
-            if 0.0 <= angle < 1.05:       # 前方偏左 0°~60°
+            if 0.0 <= angle < 1.047:      # 前方偏左 0°~60°（共120°扇区）
                 if r < min_front_left:
                     min_front_left = r
-            if -1.05 < angle < 0.0:       # 前方偏右 -60°~0°
+            if -1.047 < angle < 0.0:      # 前方偏右 -60°~0°
                 if r < min_front_right:
                     min_front_right = r
         self.lidar_left_dist = min_front_left
@@ -526,45 +537,88 @@ class GpsWaypointFollower(Node):
             self.get_logger().info(
                 f'{reason} {target_id} ({dist:.1f}m) → {next_id} '
                 f'[{self.nav_index}/{len(self.nav_path)}]')
-            self.prev_error_deg = 0.0
+            self.pulse_state = 0
+            self.pulse_ticks = 0
             return
 
-        # === 转向计算：Pure Pursuit 或 前瞻PID ===
-        if self.use_pure_pursuit:
-            error_deg, look_label = self._pure_pursuit_error(
-                cur_lat, cur_lon)
-        else:
-            error_deg, look_label = self._lookahead_pid_error(
-                cur_lat, cur_lon, dist)
+        # === 前瞻 +1 方位角误差（保留，已验证有效） ===
+        look_idx = min(self.nav_index + 1, len(self.nav_path) - 1)
+        look_id = self.nav_path[look_idx]
+        look_wp = self.waypoints[look_id]
+        look_bearing = compass_bearing(
+            cur_lat, cur_lon, look_wp['lat'], look_wp['lon'])
+        error_deg = normalize_angle_deg(look_bearing - self.heading_deg)
 
-        # P 控制
-        error_rad = math.radians(error_deg)
-        raw_angular = -(self.ang_kp * error_rad)
+        # === 脉冲状态机（替代连续 PID） ===
+        # 优先级: 侧边护栏 > 方向修正 > 直行
+        wall_left = self.lidar_left_dist < self.wall_threshold
+        wall_right = self.lidar_right_dist < self.wall_threshold
 
-        # 低通滤波
-        angular_z = (self.ang_smooth * raw_angular
-                     + (1.0 - self.ang_smooth) * self.prev_angular_z)
-        self.prev_angular_z = angular_z
-
-        # LiDAR 侧边护栏：微推避障
-        WALL_NUDGE = 0.05
-        if self.lidar_right_dist < 2.0 and self.lidar_left_dist < 2.0:
-            if self.lidar_right_dist < self.lidar_left_dist:
-                angular_z += WALL_NUDGE
+        # 侧边护栏（最高优先级，可打断方向脉冲/冷却）
+        if (wall_left or wall_right) and self.pulse_state not in (3, 4):
+            if wall_left and wall_right:
+                self.pulse_dir = 1 if self.lidar_right_dist < self.lidar_left_dist else -1
+            elif wall_right:
+                self.pulse_dir = 1   # 右墙 → 左推 (w>0)
             else:
-                angular_z -= WALL_NUDGE
-        elif self.lidar_right_dist < 2.0:
-            angular_z += WALL_NUDGE
-        elif self.lidar_left_dist < 2.0:
-            angular_z -= WALL_NUDGE
+                self.pulse_dir = -1  # 左墙 → 右推 (w<0)
+            self.pulse_state = 3
+            self.pulse_ticks = self.pulse_wall_on_ticks
+            nav_dir = -1 if error_deg > 0 else 1
+            self._wall_same_dir = (abs(error_deg) > self.dead_zone and self.pulse_dir == nav_dir)
+            self.get_logger().info(
+                f'WALL: L={self.lidar_left_dist:.1f} R={self.lidar_right_dist:.1f} '
+                f'dir={"LEFT" if self.pulse_dir==1 else "RIGHT"} err={error_deg:.1f}'
+                f'{" SAME_DIR" if self._wall_same_dir else ""}')
+        # 方向修正（仅从直行状态触发）
+        elif self.pulse_state == 0 and abs(error_deg) > self.dead_zone:
+            self.pulse_dir = -1 if error_deg > 0 else 1  # error>0→右转(w<0)
+            self.pulse_state = 1
+            self.pulse_ticks = self.pulse_nav_on_ticks
 
-        # 硬上限
+        # 状态执行 + 倒计时
+        if self.pulse_state == 1:      # 方向脉冲
+            angular_z = self.pulse_dir * self.pulse_nav_w
+            self.pulse_ticks -= 1
+            if self.pulse_ticks <= 0:
+                self.pulse_state = 2
+                self.pulse_ticks = self.pulse_nav_off_ticks
+        elif self.pulse_state == 2:    # 方向冷却
+            angular_z = 0.0
+            self.pulse_ticks -= 1
+            if self.pulse_ticks <= 0:
+                self.pulse_state = 0
+        elif self.pulse_state == 3:    # 避墙脉冲
+            # 同向时取较大力度（入口锁存，避免 dead_zone 边界抖动）
+            w = max(self.pulse_wall_w, self.pulse_nav_w) if self._wall_same_dir else self.pulse_wall_w
+            angular_z = self.pulse_dir * w
+            self.pulse_ticks -= 1
+            if self.pulse_ticks <= 0:
+                self.pulse_state = 4
+                self.pulse_ticks = self.pulse_wall_off_ticks
+        elif self.pulse_state == 4:    # 避墙冷却（允许方向修正打断）
+            if abs(error_deg) > self.dead_zone:
+                self.pulse_dir = -1 if error_deg > 0 else 1
+                self.pulse_state = 1
+                self.pulse_ticks = self.pulse_nav_on_ticks
+                angular_z = self.pulse_dir * self.pulse_nav_w
+            else:
+                angular_z = 0.0
+                self.pulse_ticks -= 1
+                if self.pulse_ticks <= 0:
+                    self.pulse_state = 0
+        else:                          # 直行
+            angular_z = 0.0
+
+        # 安全上限
         angular_z = max(-self.max_angular, min(self.max_angular, angular_z))
 
-        # 线速度
-        linear_x = min(self.max_speed, dist * self.lin_kp)
-        turn_factor = 1.0 - min(0.5, abs(angular_z) / self.max_angular)
-        linear_x *= turn_factor
+        # 线速度：中间路点匀速，最后一个路点减速停车
+        is_last = (self.nav_index >= len(self.nav_path) - 1)
+        if is_last:
+            linear_x = min(self.max_speed, dist * self.lin_kp)
+        else:
+            linear_x = self.max_speed
         linear_x = max(0.05, linear_x)
 
         # 发布
@@ -573,9 +627,11 @@ class GpsWaypointFollower(Node):
         cmd.angular.z = float(angular_z)
         self.cmd_pub.publish(cmd)
 
+        _ST = ['直行', '修正', '冷却', '避墙', '墙冷']
         self.get_logger().info(
-            f'近:{target_id}({dist:.0f}m) {look_label} | '
-            f'偏差:{error_deg:+.1f}° | v:{linear_x:.2f} w:{angular_z:.2f} '
+            f'近:{target_id}({dist:.0f}m) 瞄:{look_id} | '
+            f'偏差:{error_deg:+.1f}° | {_ST[self.pulse_state]} '
+            f'v:{linear_x:.2f} w:{angular_z:.2f} '
             f'[{self.nav_index + 1}/{len(self.nav_path)}]',
             throttle_duration_sec=1.0)
 
@@ -585,7 +641,7 @@ class GpsWaypointFollower(Node):
 
     def _lookahead_pid_error(self, cur_lat, cur_lon, dist_to_target):
         """前瞻PID：看远3个路点的方位角误差 + 终点路段方向修复"""
-        look_idx = min(self.nav_index + 3, len(self.nav_path) - 1)
+        look_idx = min(self.nav_index + 1, len(self.nav_path) - 1)
         look_id = self.nav_path[look_idx]
         look_wp = self.waypoints[look_id]
 
@@ -608,9 +664,14 @@ class GpsWaypointFollower(Node):
             error_deg = normalize_angle_deg(look_bearing - self.heading_deg)
             label = f'瞄:{look_id}'
 
-        # 死区
+        # 死区减法：噪声区归零，超出部分减去(死区+额外衰减)收窄弧线
+        EXTRA_ATTEN = 2.0  # 额外衰减度数，抑制路点噪声对弯道的放大
         if abs(error_deg) < self.dead_zone:
             error_deg = 0.0
+        else:
+            error_deg = math.copysign(
+                max(0.0, abs(error_deg) - self.dead_zone - EXTRA_ATTEN),
+                error_deg)
 
         return error_deg, label
 
@@ -842,13 +903,14 @@ class GpsWaypointFollower(Node):
             self._send_spline_path(path, cur_lat, cur_lon)
         else:
             self.get_logger().info(
-                f'PID路径: {len(path)} 路点 → 逐点跟随')
+                f'脉冲路径: {len(path)} 路点 → 逐点跟随')
             self.nav_path = path
             self.nav_index = 0
             self.navigating = True
             self.blocked = False
-            self.prev_error_deg = 0.0
-            self.prev_angular_z = 0.0
+            self.pulse_state = 0
+            self.pulse_ticks = 0
+            self.pulse_dir = 0
 
     def _cancel_nav(self):
         if self.navigating:

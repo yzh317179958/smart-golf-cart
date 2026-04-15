@@ -19,16 +19,17 @@ echo " Golf Cart v8.2 启动"
 echo "==============================="
 
 # 清理旧进程
-pkill -9 -f 'golf_\|yolo\|camera_info_fix\|foxglove\|lx_camera\|nmea_serial\|lslidar\|lidar_emergency\|summon_service\|mqtt_bridge\|imu_ned_to_enu\|yesense_node\|ekf_gps\|navsat_transform\|mode_manager\|lock_manager\|gesture_node\|gps_path_recorder\|gps_waypoint_follower\|follow_target_publisher' 2>/dev/null || true
+pkill -9 -f 'golf_\|yolo\|camera_info_fix\|lx_camera\|nmea_serial\|lslidar\|lidar_emergency\|summon_service\|mqtt_bridge\|imu_ned_to_enu\|yesense_node\|ekf_gps\|navsat_transform\|mode_manager\|lock_manager\|gesture_node\|gps_path_recorder\|gps_waypoint_follower\|follow_target_publisher' 2>/dev/null || true
 tmux kill-server 2>/dev/null || true
 rm -rf /dev/shm/fastrtps_* /dev/shm/fast_datasharing* 2>/dev/null || true
 rm -rf ~/.ros/log/* 2>/dev/null || true
+mkdir -p ~/golf_ws/logs
 sleep 2
 
 # Step 1: sensors（底盘+LiDAR+S11+GPS+IMU+EKF+foxglove）
 echo "[1/3] 启动 sensors..."
 tmux new-session -d -s golf -n sensors \
-  "source /opt/ros/humble/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && source ~/wheeltec_ros2/install/setup.bash && source ~/golf_ws/install/setup.bash 2>/dev/null && ros2 launch golf_bringup sensors.launch.py 2>&1"
+  "source /opt/ros/humble/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && source ~/wheeltec_ros2/install/setup.bash && source ~/golf_ws/install/setup.bash 2>/dev/null && ros2 launch golf_bringup sensors.launch.py 2>&1 | tee ~/golf_ws/logs/sensors.log"
 sleep 15
 
 # 检查 GPS
@@ -41,7 +42,7 @@ fi
 # Step 2: perception（YOLO 检测+跟踪）
 echo "[2/3] 启动 perception..."
 tmux new-window -t golf -n perception \
-  "source /opt/ros/humble/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && source ~/wheeltec_ros2/install/setup.bash && source ~/golf_ws/install/setup.bash 2>/dev/null && ros2 launch golf_bringup perception.launch.py 2>&1"
+  "source /opt/ros/humble/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && source ~/wheeltec_ros2/install/setup.bash && source ~/golf_ws/install/setup.bash 2>/dev/null && ros2 launch golf_bringup perception.launch.py 2>&1 | tee ~/golf_ws/logs/perception.log"
 sleep 15
 
 if timeout 5 ros2 topic hz /yolo/tracking 2>/dev/null | grep -q "average rate"; then
@@ -53,13 +54,13 @@ fi
 # Step 3: follow（模式管理+PID跟随+GPS路点记录+GPS-PID导航+LiDAR急停+召唤+MQTT）
 echo "[3/3] 启动 follow..."
 tmux new-window -t golf -n follow \
-  "source /opt/ros/humble/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && source ~/wheeltec_ros2/install/setup.bash && source ~/golf_ws/install/setup.bash 2>/dev/null && ros2 launch golf_bringup follow.launch.py 2>&1"
+  "source /opt/ros/humble/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && source ~/wheeltec_ros2/install/setup.bash && source ~/golf_ws/install/setup.bash 2>/dev/null && ros2 launch golf_bringup follow.launch.py 2>&1 | tee ~/golf_ws/logs/follow.log"
 sleep 8
 
 # 验证关键节点
 echo ""
 echo "=== 验证关键节点 ==="
-for node in mode_manager gps_waypoint_follower mqtt_bridge lidar_emergency_stop gps_path_recorder; do
+for node in mode_manager gps_waypoint_follower mqtt_bridge gps_path_recorder; do
     if ros2 node list 2>/dev/null | grep -q "$node"; then
         echo "  [ok] $node"
     else

@@ -1,11 +1,11 @@
 """全传感器集成 launch 文件
 
-一键启动: WheelTec底盘 + N10P LiDAR + S11摄像头 + S11 TF + GPS + H30 IMU + GPS EKF + foxglove_bridge
+一键启动: WheelTec底盘 + N10P LiDAR + S11摄像头 + S11 TF + GPS + H30 IMU + GPS EKF
 """
 
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, SetEnvironmentVariable
-from launch.launch_description_sources import PythonLaunchDescriptionSource, AnyLaunchDescriptionSource
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch.substitutions import LaunchConfiguration
 from launch.actions import DeclareLaunchArgument
@@ -138,14 +138,6 @@ def generate_launch_description():
             respawn_delay=2.0,
         ),
 
-        # 11. foxglove_bridge (Foxglove 可视化，轻量无内存泄漏)
-        IncludeLaunchDescription(
-            AnyLaunchDescriptionSource(
-                os.path.join(get_package_share_directory('foxglove_bridge'),
-                             'launch', 'foxglove_bridge_launch.xml')
-            ),
-            launch_arguments={'port': '8765'}.items(),
-        ),
     ]
 
     return LaunchDescription(actions)

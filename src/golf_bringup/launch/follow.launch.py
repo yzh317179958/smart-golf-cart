@@ -119,19 +119,24 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # 6. GPS 路点导航：PID模式，经过验证的参数（v8.2.4实车调优）
+        # 6. GPS 路点导航：脉冲模式（v8.3 替代连续PID）
         Node(
             package='golf_navigation',
             executable='gps_waypoint_follower',
             name='gps_waypoint_follower',
             parameters=[{
-                # v8.2.6 实车验证通过的参数（2026-04-07）
-                'ang_kp': 0.2,               # 温柔转向（0.8太激进→蛇形）
-                'max_angular': 0.3,           # 限制最大角速度（0.8→转圈）
-                'bearing_dead_zone': 15.0,    # GPS噪声死区（5°→蛇形）
+                # v8.3 脉冲式转向（2026-04-09）
+                'max_speed': 0.6,             # 最大线速度
+                'max_angular': 0.15,          # 安全上限角速度
+                'bearing_dead_zone': 20.0,    # 脉冲触发死区（覆盖GPS双重噪声）
+                'wall_threshold': 3.0,        # 侧边护栏触发距离
+                'pulse_wall_w': 0.1,          # 避墙脉冲角速度
+                'pulse_wall_on': 0.5,         # 避墙脉冲持续(s)
+                'pulse_nav_w': 0.12,          # 方向修正脉冲角速度
+                'pulse_nav_off': 0.5,         # 方向冷却持续(s)
                 'arrival_tolerance': 5.0,     # 到达判定
-                'use_mppi': False,            # PID模式
-                'use_pure_pursuit': False,    # 前瞻PID
+                'use_mppi': False,            # 脉冲模式
+                'cmd_vel_topic': '/cmd_vel',  # 直发，不经中继
                 'data_file': data_file,       # 按 mode 隔离 production/test
             }],
             output='screen',
