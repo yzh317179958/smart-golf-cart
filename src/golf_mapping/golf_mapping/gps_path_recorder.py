@@ -58,7 +58,7 @@ class GpsPathRecorder(Node):
         self.declare_parameter('save_interval', 300.0)
         self.declare_parameter('min_speed', 0.05)
         self.declare_parameter('data_file',
-                               os.path.expanduser('~/golf_ws/data/path_graph.json'))
+                               os.path.expanduser('~/golf_ws/data/production/path_graph.json'))
         self.declare_parameter('coordinate_source', 'raw')  # 'raw' | 'ekf'
         self.declare_parameter('align_distance', 8.0)  # 帧对齐检测距离（需 > 典型 GPS 漂移 5-8m）
 

@@ -37,7 +37,7 @@ class SummonService(Node):
         # 参数
         self.declare_parameter(
             'data_file',
-            os.path.expanduser('~/golf_ws/data/path_graph.json'))
+            os.path.expanduser('~/golf_ws/data/production/path_graph.json'))
         self.data_file = self.get_parameter('data_file').value
 
         # 路径图缓存
