@@ -1,8 +1,7 @@
-"""跟随功能 launch 文件
+"""跟随与导航 launch 文件
 
-启动九个节点：模式管理 + 手势识别 + 目标锁定 + PID跟随控制
-  + collision_monitor避障 + GPS路点记录 + GPS路点导航
-  + 召唤服务 + MQTT桥接
+启动 8 个节点：模式管理 + 手势识别 + 目标锁定 + PID 跟随控制
+  + GPS 路点记录 + GPS 路点脉冲跟随 + 召唤服务 + MQTT 桥接
 依赖：sensors.launch.py + perception.launch.py 已启动
 """
 
@@ -73,8 +72,7 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # 3. PID 跟随控制：锁定目标 + 深度图 → /cmd_vel_raw
-        #    输出到 /cmd_vel_raw，经 collision_monitor 安全过滤后转发到 /cmd_vel
+        # 3. PID 跟随控制：锁定目标 + 深度图 → /cmd_vel（直发）
         Node(
             package='golf_navigation',
             executable='follow_target_publisher',
@@ -96,21 +94,7 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # 4. collision_monitor：/cmd_vel_raw → /cmd_vel（避障安全层）
-        #    前方 0.5m 内障碍 → 停车，1.5m 内 → 减速 40%
-        #    NOTE: 测试阶段暂不启用，手柄急停兜底。Phase 4 产品化时启用。
-        #    启用时需同步将 follow_target_publisher 输出改回 /cmd_vel_raw
-        # Node(
-        #     package='nav2_collision_monitor',
-        #     executable='collision_monitor',
-        #     name='collision_monitor',
-        #     parameters=[
-        #         os.path.join(golf_bringup_dir, 'config', 'collision_monitor.yaml'),
-        #     ],
-        #     output='screen',
-        # ),
-
-        # 5. GPS 路点记录：跟随模式下自动记录 GPS 面包屑路点
+        # 4. GPS 路点记录：跟随模式下自动记录 GPS 面包屑路点
         Node(
             package='golf_mapping',
             executable='gps_path_recorder',
@@ -119,30 +103,28 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # 6. GPS 路点导航：脉冲模式（v8.3 替代连续PID）
+        # 5. GPS 路点导航：v8.3 脉冲转向
         Node(
             package='golf_navigation',
             executable='gps_waypoint_follower',
             name='gps_waypoint_follower',
             parameters=[{
-                # v8.3 脉冲式转向（2026-04-09）
                 'max_speed': 0.6,             # 最大线速度
                 'max_angular': 0.15,          # 安全上限角速度
-                'bearing_dead_zone': 20.0,    # 脉冲触发死区（覆盖GPS双重噪声）
+                'bearing_dead_zone': 20.0,    # 脉冲触发死区
                 'wall_threshold': 3.0,        # 侧边护栏触发距离
                 'pulse_wall_w': 0.1,          # 避墙脉冲角速度
-                'pulse_wall_on': 0.5,         # 避墙脉冲持续(s)
+                'pulse_wall_on': 0.5,         # 避墙脉冲持续 (s)
                 'pulse_nav_w': 0.12,          # 方向修正脉冲角速度
-                'pulse_nav_off': 0.5,         # 方向冷却持续(s)
+                'pulse_nav_off': 0.5,         # 方向冷却持续 (s)
                 'arrival_tolerance': 5.0,     # 到达判定
-                'use_mppi': False,            # 脉冲模式
-                'cmd_vel_topic': '/cmd_vel',  # 直发，不经中继
+                'cmd_vel_topic': '/cmd_vel',  # 直发底盘，不经中继
                 'data_file': data_file,       # 按 mode 隔离 production/test
             }],
             output='screen',
         ),
 
-        # 7. 召唤服务：接收 APP 召唤请求 → 查路径图 → 发起导航
+        # 6. 召唤服务：接收 APP 召唤请求 → 查路径图 → 发起导航
         Node(
             package='golf_navigation',
             executable='summon_service',
@@ -151,7 +133,7 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # 8. MQTT 桥接：ROS2 ↔ MQTT 双向通信（4G 网络连接 APP）
+        # 7. MQTT 桥接：ROS2 ↔ MQTT 双向通信（4G 网络连接 APP）
         Node(
             package='golf_communication',
             executable='mqtt_bridge',
