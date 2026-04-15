@@ -120,14 +120,6 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # 6b. LiDAR急停 + cmd_vel中继：/cmd_vel_nav → /cmd_vel
-        Node(
-            package='golf_navigation',
-            executable='lidar_emergency_stop',
-            name='lidar_emergency_stop',
-            output='screen',
-        ),
-
         # 7. 召唤服务：接收 APP 召唤请求 → 查路径图 → 发起导航
         Node(
             package='golf_navigation',

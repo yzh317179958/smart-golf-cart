@@ -22,7 +22,6 @@ setup(
             'follow_target_publisher = golf_navigation.follow_target_publisher:main',
             'lock_manager = golf_navigation.lock_manager_node:main',
             'gps_waypoint_follower = golf_navigation.gps_waypoint_follower:main',
-            'lidar_emergency_stop = golf_navigation.lidar_emergency_stop:main',
             'summon_service = golf_navigation.summon_service:main',
         ],
     },
