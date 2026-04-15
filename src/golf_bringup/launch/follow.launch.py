@@ -126,7 +126,7 @@ def generate_launch_description():
 
         # 6. 召唤服务：接收 APP 召唤请求 → 查路径图 → 发起导航
         Node(
-            package='golf_navigation',
+            package='golf_communication',
             executable='summon_service',
             name='summon_service',
             parameters=[{'data_file': data_file}],

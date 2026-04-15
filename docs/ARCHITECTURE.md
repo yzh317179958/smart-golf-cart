@@ -97,16 +97,16 @@ golf_ws/src/
 │   ├── mode_manager_node.py      #   全局状态机（FOLLOWING/NAVIGATION/E_STOP）
 │   ├── follow_target_publisher.py#   跟随 PID 控制器
 │   ├── lock_manager_node.py      #   目标锁定管理
-│   ├── gps_waypoint_follower.py  #   GPS 脉冲转向路点跟随（内置 LiDAR 避墙）
-│   └── summon_service.py         #   远程召唤服务（APP → 导航）
+│   └── gps_waypoint_follower.py  #   GPS 脉冲转向路点跟随（内置 LiDAR 避墙）
 │
 ├── golf_mapping/                 # 建图层
 │   ├── gps_path_recorder.py      #   GPS 路点自动记录 + 路径图维护
 │   ├── imu_ned_to_enu.py         #   IMU NED→ENU 坐标转换 + G90 航向融合
 │   └── test_logger.py            #   实车测试日志记录器
 │
-├── golf_communication/           # 通信层
-│   └── mqtt_bridge_node.py       #   MQTT ↔ ROS2 双向桥接
+├── golf_communication/           # APP 通信层
+│   ├── mqtt_bridge_node.py       #   MQTT ↔ ROS2 双向桥接
+│   └── summon_service.py         #   APP 召唤请求分发（球洞名 / GPS → /nav_trigger）
 │
 ├── golf_bringup/                 # 启动层
 │   ├── launch/                   #   Launch 文件集
@@ -355,7 +355,6 @@ E_STOP 模式:
 | `follow_target_publisher` | follow_target_publisher.py | 跟随控制器，从 /locked_target bbox + S11 深度计算角度和距离，PID 输出 /cmd_vel |
 | `lock_manager` | lock_manager_node.py | 自动锁定最大人体 bbox，维护 tracking/idle/paused 状态，发布 /locked_target 和 /follow_state |
 | `gps_waypoint_follower` | gps_waypoint_follower.py | GPS 脉冲转向路点跟随，Dijkstra 最短路径规划 + 前瞻 +1 死区脉冲 + LiDAR ±75° 避墙脉冲，直发 /cmd_vel |
-| `summon_service` | summon_service.py | 接收 APP 召唤请求（球洞名或 GPS 坐标），解析后发送 /nav_trigger 启动导航 |
 
 ### 6.3 建图层 (golf_mapping)
 
@@ -365,11 +364,12 @@ E_STOP 模式:
 | `imu_ned_to_enu` | imu_ned_to_enu.py | 融合 G90 双天线航向 (±0.3°) 和 H30 磁力计，输出 ENU 坐标系 IMU 数据供 EKF 使用 |
 | `test_logger` | test_logger.py | 实车测试时后台记录 GPS 轨迹 + 系统事件到 JSON 文件，用于离线分析和可视化 |
 
-### 6.4 通信层 (golf_communication)
+### 6.4 APP 通信层 (golf_communication)
 
 | 节点名 | 文件 | 功能 |
 |--------|------|------|
 | `mqtt_bridge` | mqtt_bridge_node.py | ROS2 ↔ MQTT 双向桥接，6 路车→APP 状态推送 + 3 路 APP→车 命令接收，线程安全队列设计 |
+| `summon_service` | summon_service.py | APP 召唤请求分发器，解析球洞名或 GPS 坐标为路点 ID，读取 path_graph.json 后发起导航并回传结果 |
 
 ### 6.5 外部依赖节点（WheelTec 官方 / 第三方）
 

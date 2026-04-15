@@ -14,11 +14,12 @@ setup(
     zip_safe=True,
     maintainer='dev',
     maintainer_email='dev@golf.local',
-    description='Golf cart communication: MQTT bridge for mobile APP integration',
+    description='Golf cart communication: MQTT bridge and summon dispatcher for mobile APP integration',
     license='MIT',
     entry_points={
         'console_scripts': [
             'mqtt_bridge = golf_communication.mqtt_bridge_node:main',
+            'summon_service = golf_communication.summon_service:main',
         ],
     },
 )

@@ -1,12 +1,13 @@
 # golf_communication
 
-高尔夫球车通信桥接包 -- 通过 MQTT 协议桥接 ROS2 话题与手机 APP，实现 4G 远程控制与状态监控。
+高尔夫球车通信桥接包 -- APP 接口层：通过 MQTT 协议桥接 ROS2 话题与手机 APP 实现 4G 远程控制与状态监控，并将 APP 召唤请求解析为内部导航指令。
 
 ## 节点列表
 
 | 节点名 | 功能 | 订阅话题 | 发布话题 |
 |--------|------|----------|----------|
-| `mqtt_bridge` | ROS2 ↔ MQTT 双向桥接，支持车辆状态上报和 APP 远程命令下发 | `/system_mode` (String), `/follow_state` (String), `/path_graph/stats` (String), `/gps/fix` (NavSatFix), `/summon_result` (String), `/nav_complete` (String) | `/summon_request` (String), `/mark_waypoint_label` (String), `/nav_trigger` (String) |
+| `mqtt_bridge` | ROS2 ↔ MQTT 双向桥接，车辆状态上报 + APP 远程命令下发 | `/system_mode`, `/follow_state`, `/path_graph/stats`, `/gps/fix`, `/summon_result`, `/nav_complete` | `/summon_request`, `/mark_waypoint_label`, `/nav_trigger` |
+| `summon_service` | APP 召唤请求分发器：读取 `path_graph.json`，把球洞名或 GPS 坐标解析为路点 ID，发起导航并回传结果 | `/summon_request`, `/nav_complete` | `/nav_trigger`, `/summon_result` |
 
 ## MQTT 话题映射
 
@@ -43,6 +44,12 @@
 | `mqtt_password` | string | (空) | MQTT 认证密码 (也可通过环境变量 MQTT_PASSWORD 设置) |
 | `vehicle_id` | string | `cart_01` | 车辆 ID，用于 MQTT 话题前缀隔离 |
 
+### summon_service
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `data_file` | string | `~/golf_ws/data/production/path_graph.json` | 路径图 JSON（由 `mode` launch 参数切换 production/test） |
+
 ## 编译方法
 
 ```bash
@@ -66,6 +73,9 @@ pip3 install paho-mqtt
 ros2 run golf_communication mqtt_bridge --ros-args \
   -p mqtt_host:=localhost \
   -p vehicle_id:=cart_01
+
+# 启动 summon_service（需要 path_graph.json 已存在）
+ros2 run golf_communication summon_service
 
 # 验证 MQTT 连接状态（查看日志输出 "MQTT connected"）
 ```

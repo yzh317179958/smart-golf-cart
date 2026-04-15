@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer='dev',
     maintainer_email='dev@golf.local',
-    description='Golf cart navigation and control: mode manager, follow, GPS-PID nav, LiDAR e-stop',
+    description='Golf cart navigation and control: mode manager, follow PID, GPS pulse waypoint follower',
     license='MIT',
     entry_points={
         'console_scripts': [
@@ -22,7 +22,6 @@ setup(
             'follow_target_publisher = golf_navigation.follow_target_publisher:main',
             'lock_manager = golf_navigation.lock_manager_node:main',
             'gps_waypoint_follower = golf_navigation.gps_waypoint_follower:main',
-            'summon_service = golf_navigation.summon_service:main',
         ],
     },
 )

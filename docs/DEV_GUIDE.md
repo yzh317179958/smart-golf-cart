@@ -39,7 +39,7 @@
 
 **规控工程师**
 - 维护 `golf_navigation` 内所有节点
-- 包括: `mode_manager`、`lock_manager`、`follow_target_publisher`、`gps_waypoint_follower`、`summon_service`
+- 包括: `mode_manager`、`lock_manager`、`follow_target_publisher`、`gps_waypoint_follower`
 
 **图像识别工程师**
 - 维护 `golf_perception` 内所有节点
@@ -153,7 +153,7 @@ ros2 launch golf_bringup follow.launch.py mode:=test
 只有在实车正式跑任务时才用默认的 `production`。生产数据改坏了只能靠备份恢复。
 
 `mode` 参数同时透传给读写路点的三个节点：`gps_path_recorder`（写）、
-`gps_waypoint_follower`（读, Dijkstra 规划）、`summon_service`（读, 查目标路点）。
+`gps_waypoint_follower`（读, Dijkstra 规划）、`golf_communication/summon_service`（读, 查目标路点）。
 
 ---
 
@@ -610,8 +610,7 @@ python3 -c "import transforms3d; print(transforms3d.__file__)"
 │       ├── mode_manager_node.py     # 系统模式管理（idle/follow/navigate）
 │       ├── follow_target_publisher.py  # 跟随 PID 控制器
 │       ├── gps_waypoint_follower.py # GPS 脉冲转向路点跟随（内置避墙）
-│       ├── lock_manager_node.py     # 目标锁定管理
-│       └── summon_service.py        # 召唤服务
+│       └── lock_manager_node.py     # 目标锁定管理
 │
 ├── golf_mapping/                    # [地图+传感器工程师] 建图
 │   └── golf_mapping/
@@ -619,7 +618,8 @@ python3 -c "import transforms3d; print(transforms3d.__file__)"
 │       ├── imu_ned_to_enu.py        # IMU NED→ENU + G90 航向融合
 │       └── test_logger.py           # 测试数据记录
 │
-└── golf_communication/              # [项目负责人] 通信
+└── golf_communication/              # [项目负责人] APP 通信层
     └── golf_communication/
-        └── mqtt_bridge_node.py      # MQTT ↔ ROS2 桥接
+        ├── mqtt_bridge_node.py      # MQTT ↔ ROS2 桥接
+        └── summon_service.py        # APP 召唤请求分发
 ```
